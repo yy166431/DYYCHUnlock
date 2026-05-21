@@ -99,6 +99,24 @@ static void setupFakeWS(void) {
     ((void(*)(id,SEL,id))objc_msgSend)(helper,
         NSSelectorFromString(@"setWebSocket:"), ws);
 
+    // Force readyState = SR_OPEN (1) to pass connection checks
+    Ivar readyStateIvar = class_getInstanceVariable(SRWebSocket, "_readyState");
+    if (readyStateIvar) {
+        ptrdiff_t off = ivar_getOffset(readyStateIvar);
+        *((int *)((uint8_t *)(__bridge void *)ws + off)) = 1; // SR_OPEN
+        YCHLOG(@"readyState forced to OPEN");
+    }
+
+    // Also hook readyState getter as fallback
+    SEL rsSel = NSSelectorFromString(@"readyState");
+    Method rsMethod = class_getInstanceMethod(SRWebSocket, rsSel);
+    if (rsMethod) {
+        method_setImplementation(rsMethod, imp_implementationWithBlock(^long(id self_) {
+            return 1; // SR_OPEN
+        }));
+        YCHLOG(@"readyState getter hooked → always OPEN");
+    }
+
     // Don't call open — just having a non-nil webSocket suppresses errors
     YCHLOG(@"Fake WS instance set on helper");
 }
