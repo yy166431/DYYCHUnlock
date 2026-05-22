@@ -1,13 +1,9 @@
 /**
- * DYYCHUnlock.m v2 — 抖音演唱会助手全功能解锁 dylib
+ * DYYCHUnlock.m v3 — iOS 16 arm64e 兼容版
  *
- * 通过 TrollFools 注入抖音（配合 libswiftMetal_patched.dylib），实现：
- * 1. Fake WS — hook wsUrl getter 返回假 URL + hook SRWebSocket delegate 回调
- * 2. Gate 解锁 — _open_dy_ych_show = 1
- * 3. addBtn fix — 补 addSubview
- * 4. AWENetworkRequest hook — 触发 req_finish 建演唱会菜单
- *
- * 编译：GitHub Actions (macOS-14 + xcrun iphoneos clang arm64)
+ * 修复：hook #4 改用 method_setImplementation 避免往 DYYCHHelper 添加新 selector
+ *       AWESpriter _hooks 枚举不到多余方法 → 不再 PAC trap
+ *       延迟 8s 等 AWESpriter _hooks block 跑完再装
  */
 
 #import <Foundation/Foundation.h>
@@ -29,9 +25,10 @@ static void setupNetworkHook(void);
 
 __attribute__((constructor))
 static void DYYCHUnlock_init(void) {
-    YCHLOG(@"init — v2.0");
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)),
+    YCHLOG(@"init — v3.0 (iOS16-compat)");
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(8.0 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
+        YCHLOG(@"installing hooks (8s delay)...");
         setupGateUnlock();
         setupAddBtnFix();
         setupNetworkHook();
@@ -40,17 +37,7 @@ static void DYYCHUnlock_init(void) {
     });
 }
 
-#pragma mark - Swizzle Helper
-
-static void swizzleInstanceMethod(Class cls, SEL orig, SEL replacement) {
-    Method origMethod = class_getInstanceMethod(cls, orig);
-    Method replMethod = class_getInstanceMethod(cls, replacement);
-    if (origMethod && replMethod) {
-        method_exchangeImplementations(origMethod, replMethod);
-    }
-}
-
-#pragma mark - 1. Fake WS (safe approach)
+#pragma mark - 1. Fake WS
 
 static IMP orig_wsUrl_IMP = NULL;
 
@@ -59,8 +46,6 @@ static id hook_wsUrl(id self, SEL _cmd) {
 }
 
 static void setupFakeWS(void) {
-    // Hook wsUrl getter on SRWebSocketHelper to return non-nil URL
-    // This prevents "广播消息订阅地址未配置" error
     Class SRWSHelper = NSClassFromString(@"SRWebSocketHelper");
     if (!SRWSHelper) { YCHLOG(@"SRWebSocketHelper not found"); return; }
 
@@ -68,11 +53,9 @@ static void setupFakeWS(void) {
     Method m = class_getInstanceMethod(SRWSHelper, wsUrlSel);
     if (m) {
         orig_wsUrl_IMP = method_setImplementation(m, (IMP)hook_wsUrl);
-        YCHLOG(@"wsUrl hook installed (returns fake URL)");
+        YCHLOG(@"wsUrl hook installed");
     }
 
-    // Also force-create a WS instance and set it on the helper
-    // so isConnected checks pass
     id helper = ((id(*)(id,SEL))objc_msgSend)((id)SRWSHelper,
                     NSSelectorFromString(@"sharedInstance"));
     if (!helper) return;
@@ -80,7 +63,6 @@ static void setupFakeWS(void) {
     Class SRWebSocket = NSClassFromString(@"SRWebSocket");
     if (!SRWebSocket) return;
 
-    // Create SRWebSocket with fake URL
     NSURL *url = [NSURL URLWithString:@"ws://127.0.0.1:18888/dy"];
     id ws = ((id(*)(id,SEL))objc_msgSend)((id)SRWebSocket,
                 NSSelectorFromString(@"alloc"));
@@ -88,47 +70,35 @@ static void setupFakeWS(void) {
                 NSSelectorFromString(@"initWithURL:"), url);
     if (!ws) return;
 
-    // Retain heavily
-    for (int i = 0; i < 10; i++) {
-        ((void(*)(id,SEL))objc_msgSend)(ws, NSSelectorFromString(@"retain"));
-    }
-
-    // Set delegate + webSocket on helper
     ((void(*)(id,SEL,id))objc_msgSend)(ws,
         NSSelectorFromString(@"setDelegate:"), helper);
     ((void(*)(id,SEL,id))objc_msgSend)(helper,
         NSSelectorFromString(@"setWebSocket:"), ws);
 
-    // Force readyState = SR_OPEN (1) to pass connection checks
     Ivar readyStateIvar = class_getInstanceVariable(SRWebSocket, "_readyState");
     if (readyStateIvar) {
         ptrdiff_t off = ivar_getOffset(readyStateIvar);
-        *((int *)((uint8_t *)(__bridge void *)ws + off)) = 1; // SR_OPEN
-        YCHLOG(@"readyState forced to OPEN");
+        *((int *)((uint8_t *)(__bridge void *)ws + off)) = 1;
     }
 
-    // Also hook readyState getter as fallback
     SEL rsSel = NSSelectorFromString(@"readyState");
     Method rsMethod = class_getInstanceMethod(SRWebSocket, rsSel);
     if (rsMethod) {
-        method_setImplementation(rsMethod, imp_implementationWithBlock(^long(id self_) {
-            return 1; // SR_OPEN
+        method_setImplementation(rsMethod, imp_implementationWithBlock(^long(id s) {
+            return 1;
         }));
-        YCHLOG(@"readyState getter hooked → always OPEN");
     }
-
-    // Don't call open — just having a non-nil webSocket suppresses errors
-    YCHLOG(@"Fake WS instance set on helper");
+    YCHLOG(@"Fake WS ready");
 }
 
-#pragma mark - 2. Gate Unlock (_open_dy_ych_show = 1)
+#pragma mark - 2. Gate Unlock
 
 static void setupGateUnlock(void) {
     Class XBD = NSClassFromString(@"XBDLeanCloudHandler");
     if (!XBD) { YCHLOG(@"XBDLeanCloudHandler not found"); return; }
 
-    SEL sharedSel = NSSelectorFromString(@"sharedInstance");
-    id xbd = ((id(*)(id,SEL))objc_msgSend)((id)XBD, sharedSel);
+    id xbd = ((id(*)(id,SEL))objc_msgSend)((id)XBD,
+                NSSelectorFromString(@"sharedInstance"));
     if (!xbd) { YCHLOG(@"XBD sharedInstance nil"); return; }
 
     Ivar ivar = class_getInstanceVariable(XBD, "_open_dy_ych_show");
@@ -144,7 +114,7 @@ static void setupGateUnlock(void) {
     }
 }
 
-#pragma mark - 3. addBtn fix (补 addSubview)
+#pragma mark - 3. addBtn fix
 
 static IMP orig_addBtnWithView_IMP = NULL;
 
@@ -172,30 +142,16 @@ static void setupAddBtnFix(void) {
     YCHLOG(@"addBtn fix installed");
 }
 
-#pragma mark - 4. AWENetworkRequest hook → trigger req_finish
+#pragma mark - 4. AWENetworkRequest hook (method_setImplementation — no new selector added)
 
-@interface NSObject (YCHNetHook)
-- (void)ych_netHook:(id)block
-              method:(id)method
-              params:(id)params
-                 res:(id)res
-                 err:(id)err
-              netReq:(id)netReq;
-@end
+static IMP orig_netReq_IMP = NULL;
 
-@implementation NSObject (YCHNetHook)
+static void hook_netReq(id self, SEL _cmd, id block, id method,
+                        id params, id res, id err, id netReq) {
+    // Call original author IMP first
+    ((void(*)(id,SEL,id,id,id,id,id,id))orig_netReq_IMP)(
+        self, _cmd, block, method, params, res, err, netReq);
 
-- (void)ych_netHook:(id)block
-              method:(id)method
-              params:(id)params
-                 res:(id)res
-                 err:(id)err
-              netReq:(id)netReq {
-    // Call original (swizzled — this calls the author's real impl)
-    [self ych_netHook:block method:method params:params
-                  res:res err:err netReq:netReq];
-
-    // Safety checks
     if (!params || !res) return;
     if (![res isKindOfClass:[NSDictionary class]]) return;
     if (![params isKindOfClass:[NSDictionary class]]) return;
@@ -209,16 +165,16 @@ static void setupAddBtnFix(void) {
 
     if (!hasProductId && !hasBuyLimit && !hasProductData) return;
 
-    Class DYYCHHelper = NSClassFromString(@"DYYCHHelper");
-    id helper = ((id(*)(id,SEL))objc_msgSend)((id)DYYCHHelper,
+    Class DYCH = NSClassFromString(@"DYYCHHelper");
+    id helper = ((id(*)(id,SEL))objc_msgSend)((id)DYCH,
                     NSSelectorFromString(@"sharedInstance"));
     if (!helper) return;
 
     @try {
         if (hasProductData) {
-            SEL sel = NSSelectorFromString(
+            SEL s = NSSelectorFromString(
                 @"req_finish_YCH_product_info_WithParams:res:");
-            ((void(*)(id,SEL,id,id))objc_msgSend)(helper, sel, params, res);
+            ((void(*)(id,SEL,id,id))objc_msgSend)(helper, s, params, res);
         } else if (hasBuyLimit) {
             SEL s1 = NSSelectorFromString(
                 @"req_finish_YCH_get_show_sku_info_WithParams:res:");
@@ -227,16 +183,14 @@ static void setupAddBtnFix(void) {
             ((void(*)(id,SEL,id,id))objc_msgSend)(helper, s1, params, res);
             ((void(*)(id,SEL,id,id))objc_msgSend)(helper, s2, params, res);
         } else {
-            SEL sel = NSSelectorFromString(
+            SEL s = NSSelectorFromString(
                 @"req_finish_YCH_product_info_WithParams:res:");
-            ((void(*)(id,SEL,id,id))objc_msgSend)(helper, sel, params, res);
+            ((void(*)(id,SEL,id,id))objc_msgSend)(helper, s, params, res);
         }
     } @catch (NSException *e) {
         YCHLOG(@"req_finish exception: %@", e.reason);
     }
 }
-
-@end
 
 static void setupNetworkHook(void) {
     Class DYYCHHelper = NSClassFromString(@"DYYCHHelper");
@@ -244,22 +198,9 @@ static void setupNetworkHook(void) {
 
     SEL orig = NSSelectorFromString(
         @"AWENetworkRequest_setCompletionBlock:method:params:res:err:netReq:");
-    SEL hook = @selector(ych_netHook:method:params:res:err:netReq:);
+    Method m = class_getInstanceMethod(DYYCHHelper, orig);
+    if (!m) { YCHLOG(@"AWENetworkRequest method not found"); return; }
 
-    Method origMethod = class_getInstanceMethod(DYYCHHelper, orig);
-    if (!origMethod) { YCHLOG(@"AWENetworkRequest method not found"); return; }
-
-    // Add our hook method to DYYCHHelper, then swizzle
-    Method hookMethod = class_getInstanceMethod([NSObject class], hook);
-    if (!hookMethod) { YCHLOG(@"hook method not found"); return; }
-
-    BOOL added = class_addMethod(DYYCHHelper, hook,
-                                 method_getImplementation(hookMethod),
-                                 method_getTypeEncoding(hookMethod));
-    if (added) {
-        swizzleInstanceMethod(DYYCHHelper, orig, hook);
-        YCHLOG(@"network hook installed");
-    } else {
-        YCHLOG(@"failed to add hook method");
-    }
+    orig_netReq_IMP = method_setImplementation(m, (IMP)hook_netReq);
+    YCHLOG(@"network hook installed (setIMP, no new selector)");
 }
