@@ -16,6 +16,8 @@
 #import <Foundation/Foundation.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
+#import <mach-o/dyld.h>
+#import <string.h>
 
 #pragma mark - Logging
 
@@ -93,15 +95,78 @@ static void setupFakeWS(void);
 static void setupGateUnlock(void);
 static void setupAddBtnFix(void);
 static void setupNetworkHook(void);
+static void setupActivationPin(void);
+static void setupIsForce(void);
+
+#pragma mark - 0. Activation pin (把激活绕过固化进 dylib，取代 frida pin)
+
+// v260525-22 专用：__common 激活标志（file VA，preferred base 0）
+//   cjIsStatus(+0x8) r4w0 = 激活；cjIsSuperAdmin(+0xb) r1w0 = 超管
+// 插件按"未激活"服务器响应会把 cjIsStatus 写回 0（→ 3连击弹复制序列号），
+// 所以这里起一个定时器持续写 1，模拟"已激活+超管"（实证：pin 住后 3连击→条款→同意→开启插件→全功能）。
+#define CJISSTATUS_VA    0x18629b8
+#define CJSUPERADMIN_VA  0x18629bb
+
+static dispatch_source_t gPinTimer;
+
+static BOOL swiftMetalSlide(intptr_t *outSlide) {
+    uint32_t n = _dyld_image_count();
+    for (uint32_t i = 0; i < n; i++) {
+        const char *nm = _dyld_get_image_name(i);
+        if (nm && strstr(nm, "libswiftMetal")) {
+            *outSlide = _dyld_get_image_vmaddr_slide(i);
+            return YES;
+        }
+    }
+    return NO;
+}
+
+static void setupActivationPin(void) {
+    // 仅在 v260525-22（混淆类 potpiutoideidcs 存在）时启用，避免在别的版本写错地址
+    if (!NSClassFromString(@"potpiutoideidcs")) {
+        YCHLOG(@"not v260525-22 (no potpiutoideidcs) — skip activation pin");
+        return;
+    }
+    dispatch_queue_t q = dispatch_get_global_queue(QOS_CLASS_BACKGROUND, 0);
+    gPinTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, q);
+    dispatch_source_set_timer(gPinTimer, DISPATCH_TIME_NOW,
+                              (uint64_t)(0.2 * NSEC_PER_SEC), (uint64_t)(0.05 * NSEC_PER_SEC));
+    dispatch_source_set_event_handler(gPinTimer, ^{
+        intptr_t slide;
+        if (swiftMetalSlide(&slide)) {
+            *(volatile uint8_t *)(CJISSTATUS_VA + slide) = 1;
+            *(volatile uint8_t *)(CJSUPERADMIN_VA + slide) = 1;
+        }
+    });
+    dispatch_resume(gPinTimer);
+    YCHLOG(@"activation pin timer started (cjIsStatus=1 + cjIsSuperAdmin=1 @200ms)");
+}
+
+// 强制 +[potpiutoideidcs isForce] 返回 YES（与 frida 实测一致）
+static BOOL hook_isForce(id self, SEL _cmd) { return YES; }
+
+static void setupIsForce(void) {
+    Class g = gateClass();
+    if (!g) return;
+    SEL s = NSSelectorFromString(@"isForce");
+    Method m = class_getClassMethod(g, s);
+    if (m) {
+        method_setImplementation(m, (IMP)hook_isForce);
+        YCHLOG(@"isForce hooked -> YES");
+    }
+}
 
 #pragma mark - Constructor
 
 __attribute__((constructor))
 static void DYYCHUnlock_init(void) {
-    YCHLOG(@"init — v4.0 (v260525-22 compat, multi-version)");
+    YCHLOG(@"init — v5.0 (v260525-22: 激活pin固化 + YCH解锁)");
+    // 激活 pin 立刻启动（定时器，越早钉住越好；用户交互在 app 起来之后）
+    setupActivationPin();
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(8.0 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
         YCHLOG(@"installing hooks (8s delay)...");
+        setupIsForce();
         setupGateUnlock();
         setupAddBtnFix();
         setupNetworkHook();
