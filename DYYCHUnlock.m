@@ -99,16 +99,20 @@ static void setupIsForce(void);
 
 #pragma mark - 0. Activation pin (把激活绕过固化进 dylib，取代 frida pin)
 
-// v260525-22 专用：__common 激活标志（file VA，preferred base 0）
-//   cjIsStatus(+0x8) r4w0 = 激活；cjIsSuperAdmin(+0xb) r1w0 = 超管
-// 插件按"未激活"服务器响应会把 cjIsStatus 写回 0（→ 3连击弹复制序列号），
-// 所以这里起一个定时器持续写 1，模拟"已激活+超管"（实证：pin 住后 3连击→条款→同意→开启插件→全功能）。
-#define CJISSTATUS_VA    0x18629b8
-#define CJSUPERADMIN_VA  0x18629bb
+// v260525-22 专用：__common 激活/开启标志（file VA，preferred base 0）
+//   cjIsStatus(+0x8) r4w0     = 激活
+//   cjIsStartTweak(+0xa) r7w3 = 已开启运行中  ← 设备实证：不 pin 它则功能不全(只弹空面板)，
+//                                                pin=1 等价于手动点过"开启插件"，全功能补齐
+//   cjIsSuperAdmin(+0xb) r1w0 = 超管
+// 插件按"未激活/未开启"会把这些写回 0，所以定时器持续写 1。
+#define CJISSTATUS_VA     0x18629b8
+#define CJSTARTTWEAK_VA   0x18629ba
+#define CJSUPERADMIN_VA   0x18629bb
 
 static dispatch_source_t gPinTimer;
 static volatile uint8_t *gStatusP = NULL;
 static volatile uint8_t *gSuperP  = NULL;
+static volatile uint8_t *gTweakP   = NULL;
 
 // 用 dladdr 拿 patched dylib 运行时基址（安全，不在 dyld 加载期遍历镜像 → 避免 v5.0 的崩溃）
 static BOOL resolvePinPtrs(void) {
@@ -121,6 +125,7 @@ static BOOL resolvePinPtrs(void) {
     if (dladdr((void *)imp, &info) && info.dli_fbase) {
         uintptr_t base = (uintptr_t)info.dli_fbase;   // 镜像 mach_header 地址（preferred base 0）
         gStatusP = (volatile uint8_t *)(base + CJISSTATUS_VA);
+        gTweakP  = (volatile uint8_t *)(base + CJSTARTTWEAK_VA);
         gSuperP  = (volatile uint8_t *)(base + CJSUPERADMIN_VA);
         return YES;
     }
@@ -139,10 +144,10 @@ static void setupActivationPin(void) {
     dispatch_source_set_timer(gPinTimer, DISPATCH_TIME_NOW,
                               (uint64_t)(0.2 * NSEC_PER_SEC), (uint64_t)(0.05 * NSEC_PER_SEC));
     dispatch_source_set_event_handler(gPinTimer, ^{
-        if (gStatusP) { *gStatusP = 1; *gSuperP = 1; }   // 只写字节，不调 _dyld/ObjC
+        if (gStatusP) { *gStatusP = 1; *gTweakP = 1; *gSuperP = 1; }   // 只写字节，不调 _dyld/ObjC
     });
     dispatch_resume(gPinTimer);
-    YCHLOG(@"activation pin started (cjIsStatus=1 + cjIsSuperAdmin=1 @200ms) base-resolved");
+    YCHLOG(@"activation pin started (cjIsStatus+cjIsStartTweak+cjIsSuperAdmin=1 @200ms)");
 }
 
 // 强制 +[potpiutoideidcs isForce] 返回 YES（与 frida 实测一致）
@@ -163,7 +168,7 @@ static void setupIsForce(void) {
 
 __attribute__((constructor))
 static void DYYCHUnlock_init(void) {
-    YCHLOG(@"init — v5.1 (v260525-22: 激活pin固化 + YCH解锁)");
+    YCHLOG(@"init — v5.2 (v260525-22: pin Status+StartTweak+SuperAdmin + YCH解锁)");
     // 全部放进 +8s 延迟块：等 dyld 镜像加载完 + 作者类注册完再动，避免加载期 race 崩溃
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(8.0 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
