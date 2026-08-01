@@ -145,12 +145,7 @@ static void hooked_ZXRequest(id self, SEL _cmd,
     NSURL *u = [NSURL URLWithString:urlStr];
     if (isAuthorURL(u)) {
         YCHLOG(@"[privacy] dropped HTTP %@ → %@", method, urlStr);
-        // 静默回调 success(nil) 让调用方正常走，不报错
-        if (success) {
-            dispatch_async(dispatch_get_main_queue(), ^{
-                ((void(*)(id))success)(nil);
-            });
-        }
+        // 静默丢弃，不调 success/failure（上报是 fire-and-forget，调用方不等回调）
         return;
     }
     origZXRequest(self, _cmd, method, urlStr, params, progress, success, failure);
