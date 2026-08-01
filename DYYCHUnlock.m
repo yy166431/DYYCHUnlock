@@ -22,6 +22,7 @@
  */
 
 #import <Foundation/Foundation.h>
+#import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
 #import <dlfcn.h>
@@ -151,6 +152,29 @@ static void hooked_ZXRequest(id self, SEL _cmd,
     origZXRequest(self, _cmd, method, urlStr, params, progress, success, failure);
 }
 
+// -[UIViewController presentViewController:animated:completion:] 拦截
+// 拦截作者的"温馨提示"公告弹窗（服务器公告/升级提示）
+typedef void (*PresentVCIMP)(id, SEL, id, BOOL, id);
+static PresentVCIMP origPresentVC = NULL;
+static void hooked_presentVC(id self, SEL _cmd, UIViewController *vc, BOOL animated, id completion) {
+    if ([vc isKindOfClass:[UIAlertController class]]) {
+        UIAlertController *alert = (UIAlertController *)vc;
+        NSString *t = alert.title;
+        // 拦截作者的服务器公告弹窗（"温馨提示"/"更新"标题）
+        if ([t isEqualToString:@"温馨提示"] || [t isEqualToString:@"更新"] || t == nil) {
+            // 检查 message 是否是作者公告特征（避免误杀其他 alert）
+            NSString *msg = alert.message;
+            if (msg && ([msg containsString:@"升级"] || [msg containsString:@"更新"] ||
+                        [msg containsString:@"请升级"] || [msg containsString:@"最新版"])) {
+                YCHLOG(@"[privacy] suppressed author alert: %@ — %@", t, msg);
+                if (completion) ((void (^)(void))completion)();
+                return;
+            }
+        }
+    }
+    origPresentVC(self, _cmd, vc, animated, completion);
+}
+
 static void installPrivacyShield(void) {
     // --- SRWebSocket -open ---
     Class srws = NSClassFromString(@"SRWebSocket");
@@ -186,6 +210,16 @@ static void installPrivacyShield(void) {
         }
     } else {
         YCHLOG(@"[privacy] ZXHttpRequest class NOT FOUND");
+    }
+    // --- UIViewController -presentViewController:animated:completion: (suppress author alert) ---
+    Class uivc = NSClassFromString(@"UIViewController");
+    if (uivc) {
+        SEL pressSel = NSSelectorFromString(@"presentViewController:animated:completion:");
+        Method m4 = class_getInstanceMethod(uivc, pressSel);
+        if (m4) {
+            origPresentVC = (PresentVCIMP)method_setImplementation(m4, (IMP)hooked_presentVC);
+            YCHLOG(@"[privacy] UIViewController -presentVC: hooked (suppress author alerts)");
+        }
     }
 }
 
