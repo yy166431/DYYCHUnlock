@@ -114,7 +114,6 @@ static void callOpenAction(void) {
 // 作者后端 IP；插件通过 SRWebSocket + ZXHttpRequest 上报使用数据/购票记录到这里
 static NSString * const kAuthorBackendHost = @"106.53.173.140";
 
-// 判断是否是作者后端的 URL
 static BOOL isAuthorURL(NSURL *url) {
     if (!url) return NO;
     NSString *h = url.host;
@@ -122,21 +121,23 @@ static BOOL isAuthorURL(NSURL *url) {
     return [h isEqualToString:kAuthorBackendHost];
 }
 
-// -[SRWebSocket open] 替换实现：目标是作者 host 时静默丢弃，不建立 WS 连接
-typedef void (*SRWSOpenIMP)(id, SEL);
-static SRWSOpenIMP origSRWebSocketOpen = NULL;
-static void hooked_SRWebSocketOpen(id self, SEL _cmd) {
-    // SRWebSocket.url 属性（只读，标准属性名）
-    NSURL *wsURL = [self valueForKey:@"url"];
-    if (isAuthorURL(wsURL)) {
-        YCHLOG(@"[privacy] dropped WS connect → %@", wsURL.absoluteString);
-        return; // 不调 original，连接不会建立
+// -[SRWebSocket initWithURLRequest:] hook：在 WS 对象创建时就把 URL 换成死地址
+// 比 -open 更早，不管 open 什么时候调都不会连到作者服务器
+typedef id (*SRWSInitIMP)(id, SEL, id);
+static SRWSInitIMP origSRWSInit = NULL;
+static id hooked_SRWSInitWithURLRequest(id self, SEL _cmd, NSURLRequest *req) {
+    NSURL *u = req.URL;
+    if (isAuthorURL(u)) {
+        YCHLOG(@"[privacy] redirect WS init → dead addr (orig: %@)", u.absoluteString);
+        // 把 URL 换成本机拒绝端口，open 会立刻 fail 且不会重连到作者服务器
+        NSURLRequest *dead = [NSURLRequest requestWithURL:
+                              [NSURL URLWithString:@"ws://127.0.0.1:1"]];
+        return origSRWSInit(self, _cmd, dead);
     }
-    origSRWebSocketOpen(self, _cmd);
+    return origSRWSInit(self, _cmd, req);
 }
 
-// ZXHttpRequest 上报拦截：hook -[ZXHttpRequest requestWithMethod:url:params:progress:success:failure:]
-// 签名：(void)(id, SEL, NSString*, NSString*, NSDictionary*, id, id, id)
+// ZXHttpRequest 上报拦截
 typedef void (*ZXReqIMP)(id, SEL, NSString*, NSString*, NSDictionary*, id, id, id);
 static ZXReqIMP origZXRequest = NULL;
 static void hooked_ZXRequest(id self, SEL _cmd,
@@ -146,7 +147,6 @@ static void hooked_ZXRequest(id self, SEL _cmd,
     NSURL *u = [NSURL URLWithString:urlStr];
     if (isAuthorURL(u)) {
         YCHLOG(@"[privacy] dropped HTTP %@ → %@", method, urlStr);
-        // 静默丢弃，不调 success/failure（上报是 fire-and-forget，调用方不等回调）
         return;
     }
     origZXRequest(self, _cmd, method, urlStr, params, progress, success, failure);
@@ -176,15 +176,17 @@ static void hooked_presentVC(id self, SEL _cmd, UIViewController *vc, BOOL anima
 }
 
 static void installPrivacyShield(void) {
-    // --- SRWebSocket -open ---
+    // --- SRWebSocket -initWithURLRequest: ---
+    // 在 WS 对象创建时换 URL，比 -open 更早，彻底断连
     Class srws = NSClassFromString(@"SRWebSocket");
     if (srws) {
-        Method m = class_getInstanceMethod(srws, @selector(open));
+        SEL initSel = NSSelectorFromString(@"initWithURLRequest:");
+        Method m = class_getInstanceMethod(srws, initSel);
         if (m) {
-            origSRWebSocketOpen = (SRWSOpenIMP)method_setImplementation(m, (IMP)hooked_SRWebSocketOpen);
-            YCHLOG(@"[privacy] SRWebSocket -open hooked");
+            origSRWSInit = (SRWSInitIMP)method_setImplementation(m, (IMP)hooked_SRWSInitWithURLRequest);
+            YCHLOG(@"[privacy] SRWebSocket -initWithURLRequest: hooked");
         } else {
-            YCHLOG(@"[privacy] SRWebSocket -open NOT FOUND");
+            YCHLOG(@"[privacy] SRWebSocket -initWithURLRequest: NOT FOUND");
         }
     } else {
         YCHLOG(@"[privacy] SRWebSocket class NOT FOUND");
@@ -225,8 +227,15 @@ static void installPrivacyShield(void) {
 
 __attribute__((constructor))
 static void DYYCHUnlock_init(void) {
-    YCHLOG(@"init — v7.0 (固化 clean.py 三件套 + Privacy Shield)");
-    // pin 越早越好（保激活，防早期降级序列号）；但 resolvePinPtrs 需类注册完，放进首次 +1s 再起，之后持续
+    YCHLOG(@"init — v7.3 (固化三件套 + Privacy Shield 早注入)");
+
+    // Privacy Shield：立即派发到主队列（dyld 加载完后首个 runloop tick 执行）
+    // 比 WS 首次 connect 更早，彻底断连作者后端
+    dispatch_async(dispatch_get_main_queue(), ^{
+        installPrivacyShield();
+    });
+
+    // pin 激活：+1s 起，等类注册完
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
         if (!NSClassFromString(@"potpiutoideidcs")) {
@@ -235,12 +244,8 @@ static void DYYCHUnlock_init(void) {
         }
         startPin();
     });
-    // Privacy Shield：+3s 装（SRWebSocket/ZXHttpRequest 类注册完，比首次 WS 连接早）
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{
-        installPrivacyShield();
-    });
-    // setOpen + 开启动作：+9s（对齐 clean.py 验证时机，等 AWESpriter/页面就绪）
+
+    // setOpen + 开启动作：+9s
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(9.0 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
         setOpenYch();
