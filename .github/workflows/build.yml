@@ -37,7 +37,7 @@ jobs:
             -O2 \
             -Wno-deprecated-declarations \
             -Wno-unused-variable \
-            DYYCHUnlock_v8.m \
+            DYYCHUnlock_v9.m \
             -o libDYYCHUnlock.dylib
 
       - name: Codesign with ldid
