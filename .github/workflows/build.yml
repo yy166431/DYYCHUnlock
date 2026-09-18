@@ -1,53 +1,39 @@
 name: build-dyychu
-
 on:
   push:
-    branches: [ main, master ]
+    branches: [main]
   workflow_dispatch:
-
+permissions:
+  contents: read
 jobs:
   build:
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
-
-      - name: Show toolchain
+      - name: Validate policy, callbacks and dependency preparation
         run: |
-          xcodebuild -version
-          xcrun --sdk iphoneos --show-sdk-path
-
-      - name: Install ldid
-        run: brew install ldid
-
-      - name: Build arm64 dylib
+          python3 -m unittest discover -s tests -p 'test_*.py' -v
+          clang -std=c11 -Wall -Wextra -Werror tests/privacy_policy_test.c -o /tmp/privacy-policy-test
+          /tmp/privacy-policy-test
+          clang -std=gnu11 -fobjc-arc -fblocks -framework Foundation -Wno-deprecated-declarations tests/privacy_runtime_test.m -o /tmp/privacy-runtime-test
+          /tmp/privacy-runtime-test
+      - name: Build the fixed arm64 library
         run: |
-          set -ex
           SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
-          xcrun --sdk iphoneos clang \
-            -arch arm64 \
-            -isysroot "$SDK" \
-            -mios-version-min=14.0 \
-            -fobjc-arc \
-            -dynamiclib \
-            -install_name "@rpath/libDYYCHUnlock.dylib" \
-            -framework Foundation \
-            -framework CoreFoundation \
-            -framework UIKit \
-            -lobjc \
-            -O2 \
-            -Wno-deprecated-declarations \
-            -Wno-unused-variable \
-            DYYCHUnlock_v9.m \
-            -o libDYYCHUnlock.dylib
-
-      - name: Codesign with ldid
-        run: |
-          ldid -S libDYYCHUnlock.dylib
+          xcrun --sdk iphoneos clang -arch arm64 -isysroot "$SDK" -mios-version-min=14.0 \
+            -std=gnu11 -fobjc-arc -fblocks -dynamiclib -O2 -fno-omit-frame-pointer \
+            -install_name '@rpath/libDYYCHUnlock.dylib' \
+            -framework Foundation -lobjc -Wno-deprecated-declarations \
+            src/DYYCHUnlock.m src/PrivacyShield.m -o libDYYCHUnlock.dylib
+          codesign --force --sign - libDYYCHUnlock.dylib
+          codesign --verify libDYYCHUnlock.dylib
           file libDYYCHUnlock.dylib
-          ls -la libDYYCHUnlock.dylib
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
+          shasum -a 256 libDYYCHUnlock.dylib
+      - uses: actions/upload-artifact@v4
         with:
-          name: libDYYCHUnlock
-          path: libDYYCHUnlock.dylib
+          name: DYYCHUnlock-fixed-arm64
+          path: |
+            libDYYCHUnlock.dylib
+            prepare_private_copy.py
+            README.md
+            PRIVACY.md
