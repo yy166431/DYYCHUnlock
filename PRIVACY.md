@@ -12,7 +12,7 @@ The old SDK configuration poisoning and generic alert suppression are removed.
 | --- | --- | --- |
 | Concert order reporting | `0xc3932c`, `0xc393c8`, `0xc39408` send the same order through three paths; event/table `dy_order_create_maybe_suc` | All three business entry points |
 | LeanCloud | Three `WPLeanCloudHandler` save methods; SDK `LCPaasClient` final sender at `0x1201840` | Save methods, final request method, archived-request replay, SDK sessions |
-| Custom HTTP | `potpiutoideidcs plxmnqazxcvbnm:data:callback:` at `0xef4c2c`; POST `http://<configured-host>/operate` | Source method plus author-created session tagging |
+| Custom HTTP | `potpiutoideidcs plxmnqazxcvbnm:data:callback:` at `0xef4c2c`; POST `http://<configured-host>/operate` | Source method, configured `logUrl` host and author-created session tagging |
 | Supabase | `mnxbvczqwpalsdf:data:withFilters:completion:` at `0xf2b420`; `upsertRecordInTable` at `0xf2db6c` | Source method, shared client request method, auth requests, configured host/session |
 | Message reporting | `pytpiutoideidcs pp60f925ab47ed:`; `/wx/ws/receive_msg`, sender `0x929f40` | Source method plus transport |
 | Account/device reporting | `plxqzmnwfdsajkl:`; `/wx/receive_data_dy` | Source method plus transport |

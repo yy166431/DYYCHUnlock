@@ -107,6 +107,9 @@ static BOOL DPSAuthorStack(void) {
 static void DPSLearnURL(id value) {
     NSURL *url = [value isKindOfClass:NSURL.class] ? value :
         ([value isKindOfClass:NSString.class] ? [NSURL URLWithString:value] : nil);
+    if (!url.host.length && [value isKindOfClass:NSString.class] &&
+        ![value hasPrefix:@"/"] && ![value containsString:@"://"])
+        url = [NSURL URLWithString:[@"http://" stringByAppendingString:value]];
     NSString *host = url.host.lowercaseString;
     if (!host.length) return;
     @synchronized(gLock) { [gLearnedHosts addObject:host]; }
@@ -437,6 +440,23 @@ static void DPSSessionFactories(void) {
 }
 
 static void DPSConfigureObservers(void) {
+    Class gate = objc_getClass("potpiutoideidcs");
+    SEL hostSelector = sel_registerName("logUrl");
+    Method hostMethod = class_getClassMethod(gate,hostSelector);
+    NSValue *hostKey = [NSValue valueWithPointer:hostMethod];
+    char returnType[32] = {0};
+    if (hostMethod) method_getReturnType(hostMethod,returnType,sizeof(returnType));
+    if (DPSOwnClass(gate) && hostMethod && ![gInstalled containsObject:hostKey] &&
+        method_getNumberOfArguments(hostMethod) == 2 && *DPSType(returnType) == '@') {
+        IMP original = method_getImplementation(hostMethod);
+        id replacement = ^id(id self) {
+            id authority = ((id(*)(id,SEL))original)(self,hostSelector);
+            DPSLearnURL(authority);
+            return authority;
+        };
+        method_setImplementation(hostMethod,imp_implementationWithBlock(replacement));
+        [gInstalled addObject:hostKey];
+    }
     Class cls = objc_getClass("SupabaseClient");
     if (!DPSOwnClass(cls)) return;
     SEL sel = sel_registerName("configureWithURL:apiKey:");

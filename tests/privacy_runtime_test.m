@@ -4,9 +4,11 @@
 
 static NSUInteger originalCalls;
 @interface potpiutoideidcs : NSObject
++ (NSString *)logUrl;
 + (void)plxmnqazxcvbnm:(id)action data:(id)data callback:(void (^)(NSDictionary *))callback;
 @end
 @implementation potpiutoideidcs
++ (NSString *)logUrl { return @"configured-author.invalid:8080"; }
 + (void)plxmnqazxcvbnm:(id)action data:(id)data callback:(void (^)(NSDictionary *))callback {
     ++originalCalls;
 }
@@ -59,6 +61,8 @@ int main(void) {
         assert(synchronousCallback);
         WaitFor(^BOOL { return callbacks == 2; });
         assert(originalCalls == 0);
+        assert([[potpiutoideidcs logUrl] isEqualToString:@"configured-author.invalid:8080"]);
+        assert(DPSDeniedURL([NSURL URLWithString:@"http://configured-author.invalid:8080/wx/get_time"]));
         NSURLSession *session = [NSURLSession sessionWithConfiguration:NSURLSessionConfiguration.ephemeralSessionConfiguration];
         NSURLRequest *privateRequest = [NSURLRequest requestWithURL:[NSURL URLWithString:@"https://api.day.app/redacted"]];
         NSURLSessionDataTask *denied = [session dataTaskWithRequest:privateRequest
