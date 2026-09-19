@@ -10,6 +10,7 @@ static BOOL clockSawAllowedRequest;
 static atomic_uint fixtureRequests;
 static atomic_uint unexpectedFixtureRequests;
 static NSString *const clockAddress = @"http://configured-author.invalid:8080/wx/get_time";
+static NSString *const configAddress = @"https://m1.apifoxmock.com/m1/2877214-1694412-default/xx/api/_conf/v1";
 
 @interface potpiutoideidcs : NSObject
 + (NSString *)logUrl;
@@ -60,6 +61,10 @@ static NSData *FixtureData(void) {
     return [@"{\"fixture_time_ms\":1760000000123}" dataUsingEncoding:NSUTF8StringEncoding];
 }
 
+static NSData *FixtureConfigData(void) {
+    return [@"{\"fixture_config\":true}" dataUsingEncoding:NSUTF8StringEncoding];
+}
+
 @interface DPSFixtureProtocol : NSURLProtocol
 @end
 @implementation DPSFixtureProtocol
@@ -67,7 +72,9 @@ static NSData *FixtureData(void) {
 + (NSURLRequest *)canonicalRequestForRequest:(NSURLRequest *)request { return request; }
 - (void)startLoading {
     atomic_fetch_add(&fixtureRequests, 1);
-    if (![self.request.URL.absoluteString isEqualToString:clockAddress] ||
+    BOOL clock = [self.request.URL.absoluteString isEqualToString:clockAddress];
+    BOOL config = [self.request.URL.absoluteString isEqualToString:configAddress];
+    if ((!clock && !config) ||
         ![self.request.HTTPMethod isEqualToString:@"GET"] || self.request.HTTPBody.length ||
         self.request.HTTPBodyStream) {
         atomic_fetch_add(&unexpectedFixtureRequests, 1);
@@ -78,7 +85,7 @@ static NSData *FixtureData(void) {
     NSHTTPURLResponse *response = [[NSHTTPURLResponse alloc] initWithURL:self.request.URL
         statusCode:200 HTTPVersion:@"HTTP/1.1" headerFields:@{@"Content-Type": @"application/json"}];
     [self.client URLProtocol:self didReceiveResponse:response cacheStoragePolicy:NSURLCacheStorageNotAllowed];
-    [self.client URLProtocol:self didLoadData:FixtureData()];
+    [self.client URLProtocol:self didLoadData:(clock ? FixtureData() : FixtureConfigData())];
     [self.client URLProtocolDidFinishLoading:self];
 }
 - (void)stopLoading {}
@@ -132,6 +139,27 @@ static void AssertTimeTask(NSURLSession *session, NSURLRequest *request) {
     [task resume];
     WaitFor(^BOOL { return callbacks == 1; });
     assert(atomic_load(&fixtureRequests) == before + 1);
+}
+
+static void AssertConfigTask(NSURLSession *session) {
+    NSURLRequest *request = [NSURLRequest requestWithURL:[NSURL URLWithString:configAddress]];
+    assert(DPSConfigRequest(request));
+    assert(DPSAllowedRequest(request));
+    __block NSUInteger callbacks = 0;
+    unsigned before = atomic_load(&fixtureRequests);
+    NSURLSessionDataTask *task = [session dataTaskWithRequest:request
+        completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+            assert(!error && [data isEqualToData:FixtureConfigData()]);
+            ++callbacks;
+        }];
+    assert([task.originalRequest.URL.absoluteString isEqualToString:configAddress]);
+    [task resume];
+    WaitFor(^BOOL { return callbacks == 1; });
+    assert(atomic_load(&fixtureRequests) == before + 1);
+    NSMutableURLRequest *wrongPath = [request mutableCopy];
+    wrongPath.URL = [NSURL URLWithString:@"https://m1.apifoxmock.com/m1/other"];
+    assert(!DPSConfigRequest(wrongPath));
+    AssertDeniedTask(session, wrongPath);
 }
 
 static void AssertDeniedUploads(NSURLSession *session, NSURLRequest *request) {
@@ -216,6 +244,7 @@ int main(void) {
 
         NSURLSession *session = FixtureSession(NO);
         NSURLSession *privateSession = FixtureSession(YES);
+        AssertConfigTask(session);
         NSURLRequest *timeRequest = [NSURLRequest requestWithURL:[NSURL URLWithString:clockAddress]];
         assert(gTimeURLs.count == 0);
         assert(DPSDeniedURL(timeRequest.URL));
@@ -394,7 +423,7 @@ int main(void) {
         [custom cancel];
         [session invalidateAndCancel];
         [privateSession invalidateAndCancel];
-        assert(atomic_load(&fixtureRequests) == 2);
+        assert(atomic_load(&fixtureRequests) == 3);
         assert(atomic_load(&unexpectedFixtureRequests) == 0);
         assert(originalCalls == 0 && clockCallbacks == 0);
         NSLog(@"Privacy runtime tests passed; permitted clock tasks completed using an in-memory protocol fixture");

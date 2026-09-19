@@ -149,10 +149,23 @@ static NSString *DPSTimeURLKey(NSURL *url) {
     return parts.string;
 }
 
+static BOOL DPSConfigRequest(NSURLRequest *request) {
+    if (![request isKindOfClass:NSURLRequest.class] ||
+        ![request.HTTPMethod isEqualToString:@"GET"] || request.HTTPBody.length ||
+        request.HTTPBodyStream) return NO;
+    NSURLComponents *parts = [NSURLComponents componentsWithURL:request.URL resolvingAgainstBaseURL:NO];
+    return [parts.scheme.lowercaseString isEqualToString:@"https"] &&
+        [parts.host.lowercaseString isEqualToString:@"m1.apifoxmock.com"] &&
+        parts.port == nil && parts.user == nil && parts.password == nil &&
+        parts.query == nil && parts.fragment == nil &&
+        [parts.percentEncodedPath isEqualToString:@"/m1/2877214-1694412-default/xx/api/_conf/v1"];
+}
+
 static BOOL DPSAllowedRequest(NSURLRequest *request) {
     if (![request isKindOfClass:NSURLRequest.class] ||
         ![request.HTTPMethod isEqualToString:@"GET"] || request.HTTPBody.length ||
         request.HTTPBodyStream) return NO;
+    if (DPSConfigRequest(request)) return YES;
     NSString *key = DPSTimeURLKey(request.URL);
     @synchronized(gLock) { return key && [gTimeURLs containsObject:key]; }
 }
@@ -464,11 +477,13 @@ static void DPSPrepareTask(id task, BOOL denied) {
                 if ([gInstalled containsObject:key]) continue;
                 IMP original = method_getImplementation(method);
                 id replacement = ^(NSURLSessionTask *self) {
-                    BOOL clockEligible = ![self isKindOfClass:NSURLSessionUploadTask.class] &&
-                        [objc_getAssociatedObject(self,&gClockTaskKey) boolValue];
+                    BOOL upload = [self isKindOfClass:NSURLSessionUploadTask.class];
+                    BOOL clockEligible = !upload && [objc_getAssociatedObject(self,&gClockTaskKey) boolValue];
+                    BOOL originalTime = clockEligible || (!upload && DPSAllowedRequest(self.originalRequest));
+                    BOOL currentTime = clockEligible || (!upload && DPSAllowedRequest(self.currentRequest));
                     if ([objc_getAssociatedObject(self,&gPrivateTaskKey) boolValue] ||
-                        (!(clockEligible || DPSAllowedRequest(self.originalRequest)) && DPSDeniedURL(self.originalRequest.URL)) ||
-                        (!(clockEligible || DPSAllowedRequest(self.currentRequest)) && DPSDeniedURL(self.currentRequest.URL))) {
+                        (!originalTime && DPSDeniedURL(self.originalRequest.URL)) ||
+                        (!currentTime && DPSDeniedURL(self.currentRequest.URL))) {
                         DPSCount();
                         [self cancel];
                     }

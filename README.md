@@ -11,11 +11,14 @@
 校时需要连接原时间服务器，对方仍能看到连接/IP；此修复不能保证“作者完全不可见”。
 手机端功能、实际往返耗时与校时精度仍需实测。
 
-实机先确认安装的是本次 Hook（SHA-256
-`46b5454e0b0be7b03021a4e34756439deed15a332b0d0d91e7e1c2e3938b5af0`），
+实机先确认安装的是最新成功构建的 Hook（本地包的 `verification.json` 记录 SHA-256），
 主插件是同目录的 `libswiftMetal_private.dylib`，并冷启动应用。启动日志应出现
 `[DYYYPrivacy] installed: WCTools requestServerTime:com:`；没有这条日志说明注入器
 没有加载新 Hook，继续测试只会走旧版本行为。
+
+校时主机还依赖一个固定配置 GET：
+`https://m1.apifoxmock.com/m1/2877214-1694412-default/xx/api/_conf/v1`。
+只为该 HTTPS 完整地址、GET、无 body/stream 的请求提供例外；其他配置/上报路径不放行。
 
 ## 构建
 

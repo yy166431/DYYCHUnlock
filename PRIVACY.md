@@ -10,6 +10,10 @@ matched separately before this hook can be considered applicable.
 
 ## Server Time Exception
 
+The clock host has a configuration prerequisite at `0xeb3c18`: a body-free GET to
+`https://m1.apifoxmock.com/m1/2877214-1694412-default/xx/api/_conf/v1`.
+Only this exact HTTPS URL/method/shape is allowed; other Apifox traffic remains blocked.
+
 The confirmed business clock path builds `http://<configured-host>/wx/get_time`
 and enters `+[WCTools requestServerTime:com:]` at `0x605cac`. The observer forwards
 its address and completion unchanged, recording only a valid complete clock URL.

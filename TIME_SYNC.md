@@ -7,6 +7,11 @@ Mach-O UUID：`79AE6B44-7FE2-3C31-9765-09ED0C83C298`。
 
 ## 实际调用链
 
+前置依赖：`sub_EB3C18`（`0xeb3c18`）先以 GET 读取固定配置
+`https://m1.apifoxmock.com/m1/2877214-1694412-default/xx/api/_conf/v1`。
+该配置用于更新时间主机；拦截它会使无缓存/新安装状态缺少可用时间主机。
+修复只放行这个无查询、无正文的 HTTPS GET，其他 Apifox 请求仍受原规则约束。
+
 ```text
 -[pytpiutoideidcs pp8364bd3d44cf] 0x895950
   → sub_895F50 / sub_8975BC
