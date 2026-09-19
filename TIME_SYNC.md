@@ -7,10 +7,26 @@ Mach-O UUID：`79AE6B44-7FE2-3C31-9765-09ED0C83C298`。
 
 ## 实际调用链
 
-前置依赖：`sub_EB3C18`（`0xeb3c18`）先以 GET 读取固定配置
+时间主机的一个配置来源：`sub_EB3C18`（`0xeb3c18`）以 GET 读取固定配置
 `https://m1.apifoxmock.com/m1/2877214-1694412-default/xx/api/_conf/v1`。
-该配置用于更新时间主机；拦截它会使无缓存/新安装状态缺少可用时间主机。
+全局 `__wsUrl`（`0x179f748`）默认指向长度为 0 的 CFString `0x13fa850`。
+此配置被拦会阻断它的一个初始化来源；主配置也能设置此值，不能只凭静态代码
+断定某台手机的实际失败原因。
 修复只放行这个无查询、无正文的 HTTPS GET，其他 Apifox 请求仍受原规则约束。
+
+配置响应的赋值链已核对：
+
+| 阶段 | 地址与数据流 |
+| --- | --- |
+| 配置 GET 回调 | block `0x13f89f0` → invoke `0xf30b1c` |
+| JSON 解析 | `0xf33144` / `0xf33150`，结果保存在 `x23+0x8c` |
+| 取配置字段 | `0xf35908` 读取顶层 `i`（CFString `0x17a3970`），`0xf3598c` 存入 `x23+0x24` |
+| 解码配置值 | `0xf349a8` 调用 `+[dssadklashjdfahj eritweisdaspsdos:]`；`0xf34a2c` 存入 `x23+0x14` |
+| 写入时间主机 | `0xf32f18` / `0xf333d8` 将该值写入 `0x179f748` |
+| 另一配置来源 | `+[potpiutoideidcs mnzxqplasdfkjhh:]`（`0xec3dcc`）取 `wsUrl_dy`，在 `0xeca3c0` / `0xee0828` 写同一全局 |
+
+主配置还将该值写入 NSUserDefaults 的 `__wsUrl` 项（`0xeca474` / `0xee08cc`）。
+持久化不等于已证实下一次启动会读回；这里仅报告已找到的写入链。
 
 ```text
 -[pytpiutoideidcs pp8364bd3d44cf] 0x895950
@@ -70,8 +86,8 @@ LeanCloud 本身存在业务初始化/上报引用；上述结论不代表整个
 
 1. 在样本自身的 `WCTools +requestServerTime:com:` 入口观察完整地址，
    原样转交原始方法、参数与 completion；安装前校验 Objective-C 方法 ABI。
-   如果首次校时发生在观察器安装竞态窗口，已识别的样本 UUID 中，
-   WCTools/订单校时调用栈也可触发同样的严格请求检查，并给任务打一次性校时标记。
+   已核对 Hikari wrapper `0xbd5c20` → `0xbd5c10` 最终调用 `objc_msgSend`，
+   没有证据表明该路径绕过方法替换。
 2. 只登记 HTTP/HTTPS 的严格 `/wx/get_time` 地址；保留协议、主机和端口，
    拒绝 userinfo、query、fragment、大小写路径变体和编码路径变体。
 3. 请求必须命中已观察地址，且为无 body、无 body stream 的 GET。
@@ -79,13 +95,17 @@ LeanCloud 本身存在业务初始化/上报引用；上述结论不代表整个
    仅路径相同不会获得例外，不会把整个 session 加入允许列表。
 4. 创建 task 和 `resume` 使用同一请求规则；原有拒绝标记仍优先取消任务。
    同一 session 后续 `/wx/receive_data_dy`、`/operate` 等上报继续受拦截。
+5. 固定配置 GET 作为独立例外，检查 HTTPS、主机、端口、编码路径、方法和正文；
+   其他 Apifox 请求及 upload task 不得到该例外。
 
 ## 验证范围
 
 - C 测试：域名边界与路径精确匹配。
 - macOS Foundation 测试：WCTools 原参数转发、重复安装、完整地址及方法/body
   边界；使用内存 URLProtocol 真正执行普通和私有 session 的校时 task，
-  并验证同一 session 的上报任务不进入 fixture。
+  并验证同一 session 的上报任务不进入 fixture。冷启动模型从空 host 开始，
+  加载 fixture 配置后取时间并以 `timestamp / 1000` 传递原回调；这不是运行主插件
+  的配置解码或偏移计算。
 - Python 测试：增加主插件依赖时保留代码、数据和现有库序号。
 - CI：执行上述测试、编译 iOS ARM64 hook、签名并校验产物。
 

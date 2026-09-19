@@ -12,13 +12,15 @@
 手机端功能、实际往返耗时与校时精度仍需实测。
 
 实机先确认安装的是最新成功构建的 Hook（本地包的 `verification.json` 记录 SHA-256），
-主插件是同目录的 `libswiftMetal_private.dylib`，并冷启动应用。启动日志应出现
-`[DYYYPrivacy] installed: WCTools requestServerTime:com:`；没有这条日志说明注入器
-没有加载新 Hook，继续测试只会走旧版本行为。
+并冷启动应用。启动日志应出现 `[DYYYPrivacy] installed: WCTools requestServerTime:com:`；
+如果没有，要核查日志采集、加载的 Hook、类和安装时序，不能仅凭缺少日志判定装错版本。
+原 patched 主插件也能与单独的 Hook 配合，但必须确认 Hook 在启动请求前加载。
+包内的 private 副本通过显式依赖约束加载顺序，其代码和数据与原主插件相同。
 
-校时主机还依赖一个固定配置 GET：
+校时主机默认是空字符串。主配置可以设置它，另一个已证实的来源是固定配置 GET：
 `https://m1.apifoxmock.com/m1/2877214-1694412-default/xx/api/_conf/v1`。
 只为该 HTTPS 完整地址、GET、无 body/stream 的请求提供例外；其他配置/上报路径不放行。
+这修复了配置获取被误拦的情况；真实网络响应和最终校时偏移仍需设备验证。
 
 ## 构建
 
@@ -44,3 +46,4 @@ Push 到 `main` 或手动运行 GitHub Actions 的 `build-dyychu`。
 - `src/PrivacyPolicy.h`：域名及严格路径规则。
 - `tests/`：策略、回调和加载依赖测试。
 - `prepare_private_copy.py`：为主插件副本增加启动依赖。
+- `diagnostics/`：可选的实机只读校时诊断，日志会扰动耗时，不用于精度测量。

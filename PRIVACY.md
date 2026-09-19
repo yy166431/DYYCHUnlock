@@ -5,21 +5,23 @@ This fixed hook targets the supplied ARM64 dylib with SHA-256
 and Mach-O UUID `79AE6B44-7FE2-3C31-9765-09ED0C83C298`.
 It retains v8's activation timing and flags with an additional image UUID check.
 The old SDK configuration poisoning and generic alert suppression are removed.
-The UUID gate is intentional: a different DYYY2/new build must be analyzed and
-matched separately before this hook can be considered applicable.
+Compatibility writes and address-based call-stack identification use this UUID.
+A different DYYY2/new build needs separate analysis; the remaining name/domain
+rules are not themselves a UUID gate.
 
 ## Server Time Exception
 
-The clock host has a configuration prerequisite at `0xeb3c18`: a body-free GET to
+The clock host starts empty. One confirmed source of its value is a body-free GET at `0xeb3c18` to
 `https://m1.apifoxmock.com/m1/2877214-1694412-default/xx/api/_conf/v1`.
-Only this exact HTTPS URL/method/shape is allowed; other Apifox traffic remains blocked.
+Its response callback decodes top-level `i` and writes `__wsUrl` at `0x179f748`.
+The main configuration can also set this value through `wsUrl_dy`.
+Only the exact HTTPS URL/method/shape above is allowed; other Apifox traffic
+remains blocked. This restores a configuration source previously denied by the
+host rule; whether it is the failing stage on a particular phone needs a trace.
 
 The confirmed business clock path builds `http://<configured-host>/wx/get_time`
 and enters `+[WCTools requestServerTime:com:]` at `0x605cac`. The observer forwards
 its address and completion unchanged, recording only a valid complete clock URL.
-If installation races the first call, the supported UUID also recognizes the
-WCTools/order clock call stack and applies the same strict shape check, then marks
-the created task for its later `resume` check.
 Only GET requests to that observed URL, with no body or body stream, receive the
 exception. Upload task APIs never receive it: their payload can be supplied
 separately from NSURLRequest. Scheme, host and port remain part of the match. The encoded path must
@@ -49,7 +51,7 @@ that use is invisible to the server operator.
 | Account/device reporting | `plxqzmnwfdsajkl:`; `/wx/receive_data_dy` | Source method plus transport |
 | Bark notifications | Several `potpiutoideidcs` push wrappers; `api.day.app`, sender `0xf231c4` | Push methods and endpoint |
 | Heartbeat and remote commands | `SRWebSocketHelper`, `ws://<configured-host>/wx/terminator`; headers include device/account identifiers | Timer, connect, reconnect and send methods; SocketRocket open/write |
-| Remote configuration | `potpiutoideidcs +load` callback fetches Apifox configuration at `0xeb3d5c`; Supabase endpoint is configurable | Configuration endpoint and author session origin |
+| Remote configuration | `potpiutoideidcs +load` fetches Apifox configuration at `0xeb3d5c`; response sets the clock host | Fixed body-free configuration GET allowed; other configuration requests follow host/origin rules |
 | Update check | `WPCheckVersionTool checkVersionFromFir`, sender `0xc856a4` | Plugin update methods and endpoint |
 | Legacy HTTP | `ZXHttpRequest baseUrl:postData:callBack:` calls `NSURLConnection` at `0x100a688` | Legacy synchronous/asynchronous APIs and author call provenance |
 
@@ -92,7 +94,10 @@ The workflow tests domain and clock-request boundaries, callback behavior,
 idempotent installation, normal request pass-through, cancelled telemetry tasks
 and header-only dependency changes. Clock tasks are resumed against an in-memory
 URL protocol fixture, including on a private session followed by denied reporting
-requests. The Objective-C tests use mocks and Foundation; they do not execute the
+requests. A cold-start model starts with an empty clock host, loads fixture
+configuration, and passes a fixture timestamp through a mock WCTools callback.
+It does not run the sample's configuration decoding or clock-offset arithmetic.
+The Objective-C tests use mocks and Foundation; they do not execute the
 target plugin or contact the author's servers. Compilation and these tests cannot
 certify iOS behavior, actual network latency or millisecond timing accuracy.
 

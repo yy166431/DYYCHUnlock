@@ -1,15 +1,20 @@
 #define DPS_TESTING 1
 #import "../src/PrivacyShield.m"
 #include <assert.h>
+#include <math.h>
 
 static NSUInteger originalCalls;
 static NSUInteger clockOriginalCalls;
 static id lastClockAddress;
 static id lastClockCompletion;
 static BOOL clockSawAllowedRequest;
+static BOOL executeClockFixture;
+static NSURLSession *clockFixtureSession;
+static NSString *fixtureClockHost;
 static atomic_uint fixtureRequests;
 static atomic_uint unexpectedFixtureRequests;
 static NSString *const clockAddress = @"http://configured-author.invalid:8080/wx/get_time";
+static NSString *const bootstrapClockAddress = @"http://boot-clock.invalid:8080/wx/get_time";
 static NSString *const configAddress = @"https://m1.apifoxmock.com/m1/2877214-1694412-default/xx/api/_conf/v1";
 
 @interface potpiutoideidcs : NSObject
@@ -19,7 +24,7 @@ static NSString *const configAddress = @"https://m1.apifoxmock.com/m1/2877214-16
 @end
 @implementation potpiutoideidcs
 + (NSString *)logUrl { return @"configured-author.invalid:8080"; }
-+ (NSString *)mnzqplxkcvbasd { return @"configured-author.invalid:8080"; }
++ (NSString *)mnzqplxkcvbasd { return fixtureClockHost; }
 + (void)plxmnqazxcvbnm:(id)action data:(id)data callback:(void (^)(NSDictionary *))callback {
     ++originalCalls;
 }
@@ -37,6 +42,19 @@ static NSString *const configAddress = @"https://m1.apifoxmock.com/m1/2877214-16
     lastClockCompletion = completion;
     NSURL *url = [address isKindOfClass:NSString.class] ? [NSURL URLWithString:address] : nil;
     clockSawAllowedRequest = url && DPSAllowedRequest([NSURLRequest requestWithURL:url]);
+    if (executeClockFixture) {
+        // A transport/contract model, not execution of the obfuscated plugin.
+        assert(clockFixtureSession && url && clockSawAllowedRequest);
+        void (^callback)(double, NSString *) = [completion copy];
+        [[clockFixtureSession dataTaskWithRequest:[NSURLRequest requestWithURL:url] completionHandler:
+            ^(NSData *data, NSURLResponse *response, NSError *error) {
+                assert(!error && [(NSHTTPURLResponse *)response statusCode] == 200);
+                NSError *decodeError = nil;
+                NSDictionary *payload = [NSJSONSerialization JSONObjectWithData:data options:0 error:&decodeError];
+                assert(!decodeError && [payload isKindOfClass:NSDictionary.class]);
+                callback([payload[@"timestamp"] doubleValue] / 1000.0, payload[@"time"]);
+            }] resume];
+    }
 }
 @end
 
@@ -57,12 +75,12 @@ static NSString *const configAddress = @"https://m1.apifoxmock.com/m1/2877214-16
 @end
 
 static NSData *FixtureData(void) {
-    // Synthetic transport fixture; this does not assert the live server's schema.
-    return [@"{\"fixture_time_ms\":1760000000123}" dataUsingEncoding:NSUTF8StringEncoding];
+    return [@"{\"timestamp\":1760000000123,\"time\":\"fixture-server-time\"}" dataUsingEncoding:NSUTF8StringEncoding];
 }
 
 static NSData *FixtureConfigData(void) {
-    return [@"{\"fixture_config\":true}" dataUsingEncoding:NSUTF8StringEncoding];
+    // This test-only schema does not emulate the plugin's configuration decryption.
+    return [@"{\"fixture_clock_host\":\"boot-clock.invalid:8080\"}" dataUsingEncoding:NSUTF8StringEncoding];
 }
 
 @interface DPSFixtureProtocol : NSURLProtocol
@@ -72,7 +90,8 @@ static NSData *FixtureConfigData(void) {
 + (NSURLRequest *)canonicalRequestForRequest:(NSURLRequest *)request { return request; }
 - (void)startLoading {
     atomic_fetch_add(&fixtureRequests, 1);
-    BOOL clock = [self.request.URL.absoluteString isEqualToString:clockAddress];
+    BOOL clock = [self.request.URL.absoluteString isEqualToString:clockAddress] ||
+                 [self.request.URL.absoluteString isEqualToString:bootstrapClockAddress];
     BOOL config = [self.request.URL.absoluteString isEqualToString:configAddress];
     if ((!clock && !config) ||
         ![self.request.HTTPMethod isEqualToString:@"GET"] || self.request.HTTPBody.length ||
@@ -162,6 +181,42 @@ static void AssertConfigTask(NSURLSession *session) {
     AssertDeniedTask(session, wrongPath);
 }
 
+static void AssertConfigBoundaries(NSURLSession *privateSession) {
+    NSURLRequest *valid = [NSURLRequest requestWithURL:[NSURL URLWithString:configAddress]];
+    NSArray *invalidAddresses = @[
+        [configAddress stringByReplacingOccurrencesOfString:@"https:" withString:@"http:"],
+        [configAddress stringByReplacingOccurrencesOfString:@"https:" withString:@"ftp:"],
+        [configAddress stringByReplacingOccurrencesOfString:@"m1.apifoxmock.com" withString:@"sub.m1.apifoxmock.com"],
+        [configAddress stringByReplacingOccurrencesOfString:@"m1.apifoxmock.com" withString:@"m1.apifoxmock.com.evil.invalid"],
+        [configAddress stringByReplacingOccurrencesOfString:@"m1.apifoxmock.com" withString:@"m1.apifoxmock.com:443"],
+        [configAddress stringByReplacingOccurrencesOfString:@"m1.apifoxmock.com" withString:@"user:password@m1.apifoxmock.com"],
+        [configAddress stringByReplacingOccurrencesOfString:@"/_conf/" withString:@"/_CONF/"],
+        [configAddress stringByReplacingOccurrencesOfString:@"/_conf/" withString:@"/%5fconf/"],
+        [configAddress stringByAppendingString:@"/"], [configAddress stringByAppendingString:@"/extra"],
+        [configAddress stringByAppendingString:@"?"], [configAddress stringByAppendingString:@"?id=fixture"],
+        [configAddress stringByAppendingString:@"#"], [configAddress stringByAppendingString:@"#fixture"]
+    ];
+    for (NSString *address in invalidAddresses) {
+        NSURLRequest *request = [NSURLRequest requestWithURL:[NSURL URLWithString:address]];
+        assert(!DPSConfigRequest(request) && !DPSAllowedRequest(request));
+        AssertDeniedTask(privateSession, request);
+    }
+    for (NSString *method in @[@"POST", @"HEAD", @"PUT", @"PATCH", @"DELETE"]) {
+        NSMutableURLRequest *request = [valid mutableCopy];
+        request.HTTPMethod = method;
+        assert(!DPSConfigRequest(request));
+        AssertDeniedTask(privateSession, request);
+    }
+    NSMutableURLRequest *body = [valid mutableCopy];
+    body.HTTPBody = [@"fixture" dataUsingEncoding:NSUTF8StringEncoding];
+    assert(!DPSConfigRequest(body));
+    AssertDeniedTask(privateSession, body);
+    NSMutableURLRequest *stream = [valid mutableCopy];
+    stream.HTTPBodyStream = [NSInputStream inputStreamWithData:[NSData data]];
+    assert(!DPSConfigRequest(stream));
+    AssertDeniedTask(privateSession, stream);
+}
+
 static void AssertDeniedUploads(NSURLSession *session, NSURLRequest *request) {
     assert([request.HTTPMethod isEqualToString:@"GET"]);
     assert(!request.HTTPBody && !request.HTTPBodyStream);
@@ -210,6 +265,57 @@ static void AssertClockForwarded(id address, id completion) {
     assert(lastClockCompletion == completion);
 }
 
+static void AssertBootstrapClock(NSURLSession *privateSession) {
+    // Offline dependency model: an empty host cannot produce a configured clock
+    // request; receiving the fixture configuration supplies that missing host.
+    // This does not run the target's encrypted-config decoder or timing algorithm.
+    fixtureClockHost = @"";
+    [gTimeURLs removeAllObjects];
+    assert(![potpiutoideidcs mnzqplxkcvbasd].length);
+    NSString *unconfiguredAddress = [NSString stringWithFormat:@"http://%@/wx/get_time",
+        [potpiutoideidcs mnzqplxkcvbasd]];
+    assert(!DPSTimeURLKey([NSURL URLWithString:unconfiguredAddress]));
+    NSURLRequest *clockRequest = [NSURLRequest requestWithURL:[NSURL URLWithString:bootstrapClockAddress]];
+    assert(!DPSAllowedRequest(clockRequest));
+    AssertDeniedTask(privateSession, clockRequest);
+    unsigned before = atomic_load(&fixtureRequests);
+    NSUInteger beforeClockCalls = clockOriginalCalls;
+    __block NSUInteger callbacks = 0;
+    void (^serverCompletion)(double, NSString *) = ^(double seconds, NSString *time) {
+        assert(fabs(seconds - 1760000000.123) < 0.000001);
+        assert([time isEqualToString:@"fixture-server-time"]);
+        ++callbacks;
+    };
+    clockFixtureSession = privateSession;
+    executeClockFixture = YES;
+    [[privateSession dataTaskWithURL:[NSURL URLWithString:configAddress] completionHandler:
+        ^(NSData *data, NSURLResponse *response, NSError *error) {
+            assert(!error && [(NSHTTPURLResponse *)response statusCode] == 200);
+            NSError *decodeError = nil;
+            NSDictionary *config = [NSJSONSerialization JSONObjectWithData:data options:0 error:&decodeError];
+            assert(!decodeError);
+            fixtureClockHost = config[@"fixture_clock_host"];
+            assert([fixtureClockHost isEqualToString:@"boot-clock.invalid:8080"]);
+            NSString *address = [NSString stringWithFormat:@"http://%@/wx/get_time",
+                [potpiutoideidcs mnzqplxkcvbasd]];
+            assert([address isEqualToString:bootstrapClockAddress]);
+            [WCTools requestServerTime:address com:serverCompletion];
+        }] resume];
+    WaitFor(^BOOL { return callbacks == 1; });
+    executeClockFixture = NO;
+    clockFixtureSession = nil;
+    assert(clockOriginalCalls == beforeClockCalls + 1 && clockSawAllowedRequest);
+    assert(lastClockCompletion == serverCompletion);
+    assert(atomic_load(&fixtureRequests) == before + 2);
+    for (NSString *path in @[@"/wx/receive_data_dy", @"/operate"]) {
+        NSMutableURLRequest *report = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:
+            [@"http://boot-clock.invalid:8080" stringByAppendingString:path]]];
+        report.HTTPMethod = @"POST";
+        report.HTTPBody = [@"fixture-report" dataUsingEncoding:NSUTF8StringEncoding];
+        AssertDeniedTask(privateSession, report);
+    }
+}
+
 int main(void) {
     @autoreleasepool {
         gLock = [NSObject new];
@@ -245,6 +351,11 @@ int main(void) {
         NSURLSession *session = FixtureSession(NO);
         NSURLSession *privateSession = FixtureSession(YES);
         AssertConfigTask(session);
+        AssertConfigTask(privateSession);
+        AssertConfigBoundaries(privateSession);
+        NSURLRequest *configRequest = [NSURLRequest requestWithURL:[NSURL URLWithString:configAddress]];
+        AssertDeniedUploads(session, configRequest);
+        AssertDeniedUploads(privateSession, configRequest);
         NSURLRequest *timeRequest = [NSURLRequest requestWithURL:[NSURL URLWithString:clockAddress]];
         assert(gTimeURLs.count == 0);
         assert(DPSDeniedURL(timeRequest.URL));
@@ -421,12 +532,13 @@ int main(void) {
         NSURLSessionDataTask *custom = [privateSession dataTaskWithURL:[NSURL URLWithString:@"https://custom.invalid/random"]];
         assert([custom.originalRequest.URL.scheme isEqualToString:@"dyyy-privacy-denied"]);
         [custom cancel];
+        AssertBootstrapClock(privateSession);
         [session invalidateAndCancel];
         [privateSession invalidateAndCancel];
-        assert(atomic_load(&fixtureRequests) == 3);
+        assert(atomic_load(&fixtureRequests) == 6);
         assert(atomic_load(&unexpectedFixtureRequests) == 0);
         assert(originalCalls == 0 && clockCallbacks == 0);
-        NSLog(@"Privacy runtime tests passed; permitted clock tasks completed using an in-memory protocol fixture");
+        NSLog(@"Privacy runtime tests passed; configuration and clock tasks completed using an in-memory protocol fixture");
     }
     return 0;
 }
