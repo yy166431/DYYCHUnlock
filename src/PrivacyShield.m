@@ -115,7 +115,13 @@ static void DPSLearnURL(id value) {
     @synchronized(gLock) { [gLearnedHosts addObject:host]; }
 }
 
+static BOOL DPSAllowedURL(NSURL *url) {
+    // Path-only match; query/fragment ignored so timestamped requests still pass.
+    return url && DPSAllowedPath(url.path.UTF8String);
+}
+
 static BOOL DPSDeniedURL(NSURL *url) {
+    if (DPSAllowedURL(url)) return NO;
     NSString *host = url.host.lowercaseString;
     if (DPSKnownHost(host.UTF8String)) return YES;
     @synchronized(gLock) { return host && [gLearnedHosts containsObject:host]; }
@@ -123,6 +129,9 @@ static BOOL DPSDeniedURL(NSURL *url) {
 
 static BOOL DPSDeniedRequest(id session, NSURLRequest *request) {
     if ([request.URL.scheme isEqualToString:@"dyyy-privacy-denied"]) return YES;
+    // Allowlisted paths bypass URL, private-session and author-stack denial so the
+    // plugin's own time-sync request is never cancelled.
+    if (DPSAllowedURL(request.URL)) return NO;
     return DPSDeniedURL(request.URL) ||
         [objc_getAssociatedObject(session, &gPrivateSessionKey) boolValue] || DPSAuthorStack();
 }

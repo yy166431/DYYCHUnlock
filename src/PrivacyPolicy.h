@@ -15,6 +15,29 @@ static bool DPSHostIs(const char *host, const char *domain) {
     return h == d || host[h - d - 1] == '.';
 }
 
+// Path-level allowlist. These endpoints stay reachable even when their host is
+// otherwise blocked, because a core (non-telemetry) feature depends on them.
+// Server time sync (/wx/get_time) drives order-grab timing; blocking it forces a
+// local-clock fallback that drifts and misses orders. Matched case-insensitively
+// against the URL path only, query string excluded.
+static bool DPSPathEquals(const char *a, const char *b) {
+    if (!a || !b) return false;
+    size_t i = 0;
+    for (; a[i] && b[i]; ++i)
+        if (tolower((unsigned char)a[i]) != tolower((unsigned char)b[i])) return false;
+    return a[i] == b[i];
+}
+
+static bool DPSAllowedPath(const char *path) {
+    if (!path) return false;
+    static const char *paths[] = {
+        "/wx/get_time"
+    };
+    for (size_t i = 0; i < sizeof(paths) / sizeof(paths[0]); ++i)
+        if (DPSPathEquals(path, paths[i])) return true;
+    return false;
+}
+
 static bool DPSKnownHost(const char *host) {
     static const char *domains[] = {
         "106.53.173.140", "lncldapi.com", "lncldglobal.com", "lncld.net",
