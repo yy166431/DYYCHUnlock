@@ -25,6 +25,7 @@ static atomic_bool gInstallScheduled;
 static void DPSInstall(void);
 static void DPSPrepareSession(id session, BOOL privateSession);
 static void DPSPrepareTask(id task, BOOL denied);
+static NSString *DPSTimeURLKey(NSURL *url);
 
 static NSError *DPSError(void) {
     return [NSError errorWithDomain:NSURLErrorDomain code:NSURLErrorCancelled
@@ -119,6 +120,18 @@ static void DPSLearnURL(id value) {
     NSString *host = url.host.lowercaseString;
     if (!host.length) return;
     @synchronized(gLock) { [gLearnedHosts addObject:host]; }
+}
+
+static void DPSRecordTimeURL(id value) {
+    if (![value isKindOfClass:NSString.class]) return;
+    NSString *base = [value stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    if (!base.length) return;
+    DPSLearnURL(base);
+    if (![base containsString:@"://"]) base = [@"http://" stringByAppendingString:base];
+    while ([base hasSuffix:@"/"]) base = [base substringToIndex:base.length - 1];
+    NSURL *url = [NSURL URLWithString:[base stringByAppendingString:@"/wx/get_time"]];
+    NSString *key = DPSTimeURLKey(url);
+    if (key) @synchronized(gLock) { [gTimeURLs addObject:key]; }
 }
 
 static NSString *DPSTimeURLKey(NSURL *url) {
@@ -437,7 +450,8 @@ static void DPSPrepareTask(id task, BOOL denied) {
     if (!task) return;
     @synchronized(gLock) {
         if (denied) objc_setAssociatedObject(task,&gPrivateTaskKey,@YES,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        else if (DPSClockRequestAllowed(nil, [task originalRequest]))
+        else if (![task isKindOfClass:NSURLSessionUploadTask.class] &&
+                 DPSClockRequestAllowed(nil, [task originalRequest]))
             objc_setAssociatedObject(task,&gClockTaskKey,@YES,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         for (Class cls = object_getClass(task); DPSSubclass(cls,NSURLSessionTask.class); cls = class_getSuperclass(cls)) {
             unsigned count = 0;
@@ -542,6 +556,25 @@ static void DPSConfigureObservers(void) {
         };
         method_setImplementation(hostMethod,imp_implementationWithBlock(replacement));
         [gInstalled addObject:hostKey];
+    }
+    // Register the time host before WCTools constructs its NSURLRequest. This
+    // covers an initial call that races the WCTools observer installation.
+    SEL timeHostSelector = sel_registerName("mnzqplxkcvbasd");
+    Method timeHostMethod = class_getClassMethod(gate,timeHostSelector);
+    NSValue *timeHostKey = [NSValue valueWithPointer:timeHostMethod];
+    char timeHostType[32] = {0};
+    if (timeHostMethod) method_getReturnType(timeHostMethod,timeHostType,sizeof(timeHostType));
+    if (DPSOwnClass(gate) && timeHostMethod && ![gInstalled containsObject:timeHostKey] &&
+        method_getNumberOfArguments(timeHostMethod) == 2 && *DPSType(timeHostType) == '@') {
+        IMP original = method_getImplementation(timeHostMethod);
+        id replacement = ^id(id self) {
+            id host = ((id(*)(id,SEL))original)(self,timeHostSelector);
+            DPSRecordTimeURL(host);
+            return host;
+        };
+        method_setImplementation(timeHostMethod,imp_implementationWithBlock(replacement));
+        [gInstalled addObject:timeHostKey];
+        NSLog(@"[DYYYPrivacy] installed: potpiutoideidcs mnzqplxkcvbasd");
     }
     Class cls = objc_getClass("SupabaseClient");
     if (!DPSOwnClass(cls)) return;
