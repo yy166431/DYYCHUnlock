@@ -62,7 +62,11 @@ int main(void) {
         WaitFor(^BOOL { return callbacks == 2; });
         assert(originalCalls == 0);
         assert([[potpiutoideidcs logUrl] isEqualToString:@"configured-author.invalid:8080"]);
-        assert(DPSDeniedURL([NSURL URLWithString:@"http://configured-author.invalid:8080/wx/get_time"]));
+        // The learned author host is blocked, but the time-sync path is allowlisted
+        // so calibration survives; other paths on the same host stay denied.
+        assert(!DPSDeniedURL([NSURL URLWithString:@"http://configured-author.invalid:8080/wx/get_time"]));
+        assert(!DPSDeniedURL([NSURL URLWithString:@"http://configured-author.invalid:8080/wx/get_time?ts=123"]));
+        assert(DPSDeniedURL([NSURL URLWithString:@"http://configured-author.invalid:8080/wx/receive_data_dy"]));
         NSURLSession *session = [NSURLSession sessionWithConfiguration:NSURLSessionConfiguration.ephemeralSessionConfiguration];
         NSURLRequest *privateRequest = [NSURLRequest requestWithURL:[NSURL URLWithString:@"https://api.day.app/redacted"]];
         NSURLSessionDataTask *denied = [session dataTaskWithRequest:privateRequest
