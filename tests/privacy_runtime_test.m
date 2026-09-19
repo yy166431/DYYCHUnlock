@@ -182,6 +182,16 @@ static void AssertConfigTask(NSURLSession *session) {
 }
 
 static void AssertConfigBoundaries(NSURLSession *privateSession) {
+    // The iOS startup path passes an unfinished request. Predicate checks must
+    // reject it without handing a nil URL to NSURLComponents (which throws).
+    NSMutableURLRequest *unfinished = [NSMutableURLRequest new];
+    unfinished.HTTPMethod = @"GET";
+    assert(unfinished.URL == nil);
+    assert(!DPSConfigRequest(unfinished) && !DPSAllowedRequest(unfinished));
+    assert(!DPSDeniedRequest(nil, unfinished));
+    assert(DPSDeniedRequest(privateSession, unfinished));
+    assert(!DPSConfigRequest(nil));
+    assert(!DPSConfigRequest((id)[NSObject new]));
     NSURLRequest *valid = [NSURLRequest requestWithURL:[NSURL URLWithString:configAddress]];
     NSArray *invalidAddresses = @[
         [configAddress stringByReplacingOccurrencesOfString:@"https:" withString:@"http:"],

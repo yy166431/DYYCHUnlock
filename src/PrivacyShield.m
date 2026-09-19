@@ -135,7 +135,11 @@ static BOOL DPSConfigRequest(NSURLRequest *request) {
     if (![request isKindOfClass:NSURLRequest.class] ||
         ![request.HTTPMethod isEqualToString:@"GET"] || request.HTTPBody.length ||
         request.HTTPBodyStream) return NO;
-    NSURLComponents *parts = [NSURLComponents componentsWithURL:request.URL resolvingAgainstBaseURL:NO];
+    // The plugin can create an unfinished request during startup. Foundation
+    // raises NSInvalidArgumentException when given a nil URL on iOS 14.
+    NSURL *url = request.URL;
+    if (!url) return NO;
+    NSURLComponents *parts = [NSURLComponents componentsWithURL:url resolvingAgainstBaseURL:NO];
     return [parts.scheme.lowercaseString isEqualToString:@"https"] &&
         [parts.host.lowercaseString isEqualToString:@"m1.apifoxmock.com"] &&
         parts.port == nil && parts.user == nil && parts.password == nil &&
