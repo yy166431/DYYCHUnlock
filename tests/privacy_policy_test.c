@@ -17,11 +17,13 @@ int main(void) {
     for (size_t i = 0; i < sizeof(allowed)/sizeof(allowed[0]); ++i) assert(!DPSKnownHost(allowed[i]));
     puts("privacy domain boundary tests passed");
 
-    // Path allowlist: only the exact time-sync path passes, case-insensitively.
-    const char *allowedPaths[] = { "/wx/get_time", "/WX/GET_TIME", "/wx/Get_Time" };
+    const char *allowedPaths[] = { "/wx/get_time" };
     const char *deniedPaths[] = {
         NULL, "", "/wx/get_times", "/wx/get_tim", "wx/get_time",
-        "/wx/get_time/extra", "/wx/receive_data_dy", "/operate"
+        "/wx/get_time/extra", "/1.1/date/extra", "/1.1/dates",
+        "/wx/receive_data_dy", "/operate", "/1.1/date", "/1.1/DATE",
+        "/WX/GET_TIME", "/wx/Get_Time", "/wx/get_time/", "/wx%2Fget_time",
+        "/wx/get_time?ts=123"
     };
     for (size_t i = 0; i < sizeof(allowedPaths)/sizeof(allowedPaths[0]); ++i) assert(DPSAllowedPath(allowedPaths[i]));
     for (size_t i = 0; i < sizeof(deniedPaths)/sizeof(deniedPaths[0]); ++i) assert(!DPSAllowedPath(deniedPaths[i]));

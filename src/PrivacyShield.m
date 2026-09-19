@@ -13,6 +13,7 @@
 static atomic_uintptr_t gTargetBase;
 static atomic_bool gKnownBuild;
 static NSMutableSet<NSString *> *gLearnedHosts;
+static NSMutableSet<NSString *> *gTimeURLs;
 static NSMutableSet<NSValue *> *gInstalled;
 static NSObject *gLock;
 static char gPrivateSessionKey;
@@ -115,25 +116,46 @@ static void DPSLearnURL(id value) {
     @synchronized(gLock) { [gLearnedHosts addObject:host]; }
 }
 
-static BOOL DPSAllowedURL(NSURL *url) {
-    // Path-only match; query/fragment ignored so timestamped requests still pass.
-    return url && DPSAllowedPath(url.path.UTF8String);
+static NSString *DPSTimeURLKey(NSURL *url) {
+    if (!url) return nil;
+    NSURLComponents *parts = [NSURLComponents componentsWithURL:url resolvingAgainstBaseURL:NO];
+    NSString *scheme = parts.scheme.lowercaseString;
+    // The observed clock builder adds no query, credentials or fragment. Check
+    // the encoded path so encoded separators cannot widen this exception.
+    if ((![scheme isEqualToString:@"http"] && ![scheme isEqualToString:@"https"]) ||
+        !parts.host.length || parts.user != nil || parts.password != nil ||
+        parts.query != nil || parts.fragment != nil ||
+        !DPSAllowedPath(parts.percentEncodedPath.UTF8String)) return nil;
+    parts.scheme = scheme;
+    parts.host = parts.host.lowercaseString;
+    return parts.string;
+}
+
+static BOOL DPSAllowedRequest(NSURLRequest *request) {
+    if (![request isKindOfClass:NSURLRequest.class] ||
+        ![request.HTTPMethod isEqualToString:@"GET"] || request.HTTPBody.length ||
+        request.HTTPBodyStream) return NO;
+    NSString *key = DPSTimeURLKey(request.URL);
+    @synchronized(gLock) { return key && [gTimeURLs containsObject:key]; }
 }
 
 static BOOL DPSDeniedURL(NSURL *url) {
-    if (DPSAllowedURL(url)) return NO;
     NSString *host = url.host.lowercaseString;
     if (DPSKnownHost(host.UTF8String)) return YES;
     @synchronized(gLock) { return host && [gLearnedHosts containsObject:host]; }
 }
 
-static BOOL DPSDeniedRequest(id session, NSURLRequest *request) {
+static BOOL DPSDeniedRequestWithoutTimeException(id session, NSURLRequest *request) {
     if ([request.URL.scheme isEqualToString:@"dyyy-privacy-denied"]) return YES;
-    // Allowlisted paths bypass URL, private-session and author-stack denial so the
-    // plugin's own time-sync request is never cancelled.
-    if (DPSAllowedURL(request.URL)) return NO;
     return DPSDeniedURL(request.URL) ||
         [objc_getAssociatedObject(session, &gPrivateSessionKey) boolValue] || DPSAuthorStack();
+}
+
+static BOOL DPSDeniedRequest(id session, NSURLRequest *request) {
+    // Only endpoints observed at WCTools' clock entry get an exception. Preserve
+    // its request, callback, server timestamp and timing calculations unchanged.
+    if (DPSAllowedRequest(request)) return NO;
+    return DPSDeniedRequestWithoutTimeException(session, request);
 }
 
 static NSURLRequest *DPSSanitizedRequest(void) {
@@ -283,9 +305,13 @@ static void DPSTransportMethod(Class cls, Method method) {
     NSArray *threeArgs = @[@"uploadTaskWithRequest:fromData:completionHandler:",
                             @"uploadTaskWithRequest:fromFile:completionHandler:"];
     if ([oneArg containsObject:name]) {
+        BOOL upload = [name hasPrefix:@"uploadTask"];
         replacement = ^id(id self, id a) {
             NSURLRequest *request = urlArgument ? [NSURLRequest requestWithURL:a] : a;
-            BOOL denied = DPSDeniedRequest(self, request);
+            // Upload bodies can be supplied outside NSURLRequest (including by
+            // a delegate); these APIs never receive the clock exception.
+            BOOL denied = upload ? DPSDeniedRequestWithoutTimeException(self, request) :
+                                   DPSDeniedRequest(self, request);
             if (denied) { DPSCount(); a = urlArgument ? DPSSanitizedRequest().URL : DPSSanitizedRequest(); }
             id task = ((id(*)(id,SEL,id))original)(self,sel,a);
             DPSPrepareTask(task,denied);
@@ -296,7 +322,8 @@ static void DPSTransportMethod(Class cls, Method method) {
         BOOL file = [name containsString:@"fromFile:"];
         replacement = ^id(id self, id a, id b) {
             NSURLRequest *request = urlArgument ? [NSURLRequest requestWithURL:a] : a;
-            BOOL denied = DPSDeniedRequest(self, request);
+            BOOL denied = payload ? DPSDeniedRequestWithoutTimeException(self, request) :
+                                    DPSDeniedRequest(self, request);
             if (denied) {
                 DPSCount(); a = urlArgument ? DPSSanitizedRequest().URL : DPSSanitizedRequest();
                 if (payload) b = file ? [NSURL fileURLWithPath:@"/dev/null"] : [NSData data];
@@ -308,7 +335,7 @@ static void DPSTransportMethod(Class cls, Method method) {
     } else if ([threeArgs containsObject:name]) {
         BOOL file = [name containsString:@"fromFile:"];
         replacement = ^id(id self, id a, id b, id c) {
-            BOOL denied = DPSDeniedRequest(self,a);
+            BOOL denied = DPSDeniedRequestWithoutTimeException(self,a);
             if (denied) {
                 DPSCount(); a = DPSSanitizedRequest();
                 b = file ? [NSURL fileURLWithPath:@"/dev/null"] : [NSData data];
@@ -396,8 +423,10 @@ static void DPSPrepareTask(id task, BOOL denied) {
                 if ([gInstalled containsObject:key]) continue;
                 IMP original = method_getImplementation(method);
                 id replacement = ^(NSURLSessionTask *self) {
+                    BOOL clockEligible = ![self isKindOfClass:NSURLSessionUploadTask.class];
                     if ([objc_getAssociatedObject(self,&gPrivateTaskKey) boolValue] ||
-                        DPSDeniedURL(self.originalRequest.URL) || DPSDeniedURL(self.currentRequest.URL)) {
+                        (!(clockEligible && DPSAllowedRequest(self.originalRequest)) && DPSDeniedURL(self.originalRequest.URL)) ||
+                        (!(clockEligible && DPSAllowedRequest(self.currentRequest)) && DPSDeniedURL(self.currentRequest.URL))) {
                         DPSCount();
                         [self cancel];
                     }
@@ -449,6 +478,26 @@ static void DPSSessionFactories(void) {
 }
 
 static void DPSConfigureObservers(void) {
+    Class clock = objc_getClass("WCTools");
+    SEL clockSel = sel_registerName("requestServerTime:com:");
+    Method clockMethod = class_getClassMethod(clock,clockSel);
+    NSValue *clockKey = [NSValue valueWithPointer:clockMethod];
+    if (DPSOwnClass(clock) && clockMethod && ![gInstalled containsObject:clockKey]) {
+        if (!DPSMethodMatches(clockMethod,"@@")) {
+            NSLog(@"[DYYYPrivacy] ABI mismatch: WCTools requestServerTime:com:");
+        } else {
+            IMP original = method_getImplementation(clockMethod);
+            id replacement = ^(id self,id address,id completion) {
+                NSURL *url = [address isKindOfClass:NSString.class] ? [NSURL URLWithString:address] : nil;
+                NSString *key = DPSTimeURLKey(url);
+                if (key) { @synchronized(gLock) { [gTimeURLs addObject:key]; } }
+                ((void(*)(id,SEL,id,id))original)(self,clockSel,address,completion);
+            };
+            method_setImplementation(clockMethod,imp_implementationWithBlock(replacement));
+            [gInstalled addObject:clockKey];
+            NSLog(@"[DYYYPrivacy] installed: WCTools requestServerTime:com:");
+        }
+    }
     Class gate = objc_getClass("potpiutoideidcs");
     SEL hostSelector = sel_registerName("logUrl");
     Method hostMethod = class_getClassMethod(gate,hostSelector);
@@ -514,6 +563,7 @@ static void DPSImageAdded(const struct mach_header *header, intptr_t slide) {
         gLock = [NSObject new];
         gInstalled = [NSMutableSet new];
         gLearnedHosts = [NSMutableSet new];
+        gTimeURLs = [NSMutableSet new];
         DPSInstall();
         _dyld_register_func_for_add_image(DPSImageAdded);
         dispatch_async(dispatch_get_main_queue(), ^{

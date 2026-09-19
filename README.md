@@ -3,6 +3,14 @@
 当前仓库只维护一个修复版本，输出 `libDYYCHUnlock.dylib`。
 保留已使用 v8 的兼容逻辑，新增对已确认的订单、账号、设备、消息、推送和心跳上报链路的拦截。
 
+校时修复：观察主插件 `WCTools +requestServerTime:com:` 实际使用的完整地址，
+只为该地址的无请求体 GET `/wx/get_time` 提供例外。请求创建和执行均应用这一规则，
+同一会话内的其他上报仍受拦截。服务器响应、时间换算、时差计算和回调保持原样。
+逆向证据及测试范围见 [TIME_SYNC.md](TIME_SYNC.md)。
+
+校时需要连接原时间服务器，对方仍能看到连接/IP；此修复不能保证“作者完全不可见”。
+手机端功能、实际往返耗时与校时精度仍需实测。
+
 ## 构建
 
 Push 到 `main` 或手动运行 GitHub Actions 的 `build-dyychu`。
@@ -24,6 +32,6 @@ Push 到 `main` 或手动运行 GitHub Actions 的 `build-dyychu`。
 
 - `src/DYYCHUnlock.m`：保留的 v8 兼容逻辑及样本检查。
 - `src/PrivacyShield.m`：上报入口、网络任务与 WebSocket 拦截。
-- `src/PrivacyPolicy.h`：域名规则。
+- `src/PrivacyPolicy.h`：域名及严格路径规则。
 - `tests/`：策略、回调和加载依赖测试。
 - `prepare_private_copy.py`：为主插件副本增加启动依赖。

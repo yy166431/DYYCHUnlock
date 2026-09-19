@@ -1,3 +1,5 @@
 __pycache__/
 tests/*.exe
 *.blackbox-analysis/
+/libDYYCHUnlock.dylib
+*.dSYM/

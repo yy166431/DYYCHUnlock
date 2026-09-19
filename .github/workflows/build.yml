@@ -37,3 +37,4 @@ jobs:
             prepare_private_copy.py
             README.md
             PRIVACY.md
+            TIME_SYNC.md

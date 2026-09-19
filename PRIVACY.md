@@ -6,6 +6,28 @@ and Mach-O UUID `79AE6B44-7FE2-3C31-9765-09ED0C83C298`.
 It retains v8's activation timing and flags with an additional image UUID check.
 The old SDK configuration poisoning and generic alert suppression are removed.
 
+## Server Time Exception
+
+The confirmed business clock path builds `http://<configured-host>/wx/get_time`
+and enters `+[WCTools requestServerTime:com:]` at `0x605cac`. The observer forwards
+its address and completion unchanged, recording only a valid complete clock URL.
+Only GET requests to that observed URL, with no body or body stream, receive the
+exception. Upload task APIs never receive it: their payload can be supplied
+separately from NSURLRequest. Scheme, host and port remain part of the match. The encoded path must
+be exactly `/wx/get_time`; credentials, query strings and fragments are rejected.
+The exception is checked at both task creation and `resume`. Existing denied-task
+tags remain effective, and other requests in the same session stay subject to
+blocking. The companion does not substitute local time or modify clock arithmetic.
+
+There is no confirmed business call to LeanCloud's `/1.1/date` in this sample;
+finding its SDK implementation alone does not justify an exception. LeanCloud's
+existing request interception remains in place. See [TIME_SYNC.md](TIME_SYNC.md)
+for the addresses, response parsing and limits of the static evidence.
+
+Clock synchronization still contacts the configured server, which can observe
+the connection and IP address. Blocking identified telemetry is not a guarantee
+that use is invisible to the server operator.
+
 ## Confirmed Outbound Routes
 
 | Route | Binary evidence | Interception |
@@ -57,10 +79,13 @@ the plugin starts. Revert to the original two-library setup to undo this change.
 
 ## Validation And Limits
 
-The workflow tests domain boundaries, callback behavior, idempotent installation,
-normal request pass-through, cancelled telemetry tasks and header-only dependency
-changes. The Objective-C tests use mocks and Foundation; they do not execute the
-target plugin. Compilation and these tests cannot certify iOS behavior.
+The workflow tests domain and clock-request boundaries, callback behavior,
+idempotent installation, normal request pass-through, cancelled telemetry tasks
+and header-only dependency changes. Clock tasks are resumed against an in-memory
+URL protocol fixture, including on a private session followed by denied reporting
+requests. The Objective-C tests use mocks and Foundation; they do not execute the
+target plugin or contact the author's servers. Compilation and these tests cannot
+certify iOS behavior, actual network latency or millisecond timing accuracy.
 
 Before treating a device as isolated, validate cold launch, sign-in, opening the
 concert view, ordinary feature operation, a test order event, background/resume,
