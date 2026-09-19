@@ -5,12 +5,17 @@ This fixed hook targets the supplied ARM64 dylib with SHA-256
 and Mach-O UUID `79AE6B44-7FE2-3C31-9765-09ED0C83C298`.
 It retains v8's activation timing and flags with an additional image UUID check.
 The old SDK configuration poisoning and generic alert suppression are removed.
+The UUID gate is intentional: a different DYYY2/new build must be analyzed and
+matched separately before this hook can be considered applicable.
 
 ## Server Time Exception
 
 The confirmed business clock path builds `http://<configured-host>/wx/get_time`
 and enters `+[WCTools requestServerTime:com:]` at `0x605cac`. The observer forwards
 its address and completion unchanged, recording only a valid complete clock URL.
+If installation races the first call, the supported UUID also recognizes the
+WCTools/order clock call stack and applies the same strict shape check, then marks
+the created task for its later `resume` check.
 Only GET requests to that observed URL, with no body or body stream, receive the
 exception. Upload task APIs never receive it: their payload can be supplied
 separately from NSURLRequest. Scheme, host and port remain part of the match. The encoded path must

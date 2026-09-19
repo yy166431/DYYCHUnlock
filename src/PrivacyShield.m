@@ -17,6 +17,7 @@ static NSMutableSet<NSString *> *gTimeURLs;
 static NSMutableSet<NSValue *> *gInstalled;
 static NSObject *gLock;
 static char gPrivateSessionKey;
+static char gClockTaskKey;
 static atomic_ulong gDenied;
 static _Thread_local BOOL gCheckingStack;
 static char gPrivateTaskKey;
@@ -83,7 +84,10 @@ static BOOL DPSAuthorStack(void) {
         {0x9263d4,0x92e000}, {0xd2c4d4,0xd336a8},
         {0xeb2a6c,0xf308c0}, {0x1007bd8,0x100cac4},
         {0x10ae9ec,0x10c1088}, {0xc7a638,0xc96d00},
-        {0x11cdb28,0x12437d4}
+        {0x11cdb28,0x12437d4},
+        // WCTools clock builder and the two order-time callers. Hikari may
+        // invoke the IMP directly, bypassing an Objective-C method swizzle.
+        {0x605cac,0x609000}, {0x895950,0x899500}
     };
     for (int i = 0; i < count && !found; ++i) {
         Dl_info info = {0};
@@ -99,6 +103,7 @@ static BOOL DPSAuthorStack(void) {
                   strstr(s, "[SRWebSocketHelper ") || strstr(s, "[LCPaasClient ") ||
                   strstr(s, "[LCRouter ") || strstr(s, "[LCURLSessionManager ") ||
                   strstr(s, "[LCFileTaskManager ") || strstr(s, "[WPCheckVersionTool ") ||
+                  strstr(s, "[WCTools ") ||
                   strstr(s, "pp60f925ab47ed:"))) found = YES;
     }
     gCheckingStack = NO;
@@ -139,6 +144,26 @@ static BOOL DPSAllowedRequest(NSURLRequest *request) {
     @synchronized(gLock) { return key && [gTimeURLs containsObject:key]; }
 }
 
+// This is the strict shape check without requiring a prior WCTools observer.
+// It is only used while the supported sample's clock call is on the stack;
+// ordinary requests still require an observed complete URL.
+static BOOL DPSStrictClockRequest(NSURLRequest *request) {
+    if (![request isKindOfClass:NSURLRequest.class] ||
+        ![request.HTTPMethod isEqualToString:@"GET"] || request.HTTPBody.length ||
+        request.HTTPBodyStream) return NO;
+    return DPSTimeURLKey(request.URL) != nil;
+}
+
+static BOOL DPSClockRequestAllowed(id session, NSURLRequest *request) {
+    (void)session;
+    if (DPSAllowedRequest(request)) return YES;
+    if (DPSStrictClockRequest(request) && DPSAuthorStack()) {
+        NSLog(@"[DYYYPrivacy] clock route allowed from WCTools call stack: %@", request.URL.absoluteString);
+        return YES;
+    }
+    return NO;
+}
+
 static BOOL DPSDeniedURL(NSURL *url) {
     NSString *host = url.host.lowercaseString;
     if (DPSKnownHost(host.UTF8String)) return YES;
@@ -154,7 +179,7 @@ static BOOL DPSDeniedRequestWithoutTimeException(id session, NSURLRequest *reque
 static BOOL DPSDeniedRequest(id session, NSURLRequest *request) {
     // Only endpoints observed at WCTools' clock entry get an exception. Preserve
     // its request, callback, server timestamp and timing calculations unchanged.
-    if (DPSAllowedRequest(request)) return NO;
+    if (DPSClockRequestAllowed(session, request)) return NO;
     return DPSDeniedRequestWithoutTimeException(session, request);
 }
 
@@ -412,6 +437,8 @@ static void DPSPrepareTask(id task, BOOL denied) {
     if (!task) return;
     @synchronized(gLock) {
         if (denied) objc_setAssociatedObject(task,&gPrivateTaskKey,@YES,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        else if (DPSClockRequestAllowed(nil, [task originalRequest]))
+            objc_setAssociatedObject(task,&gClockTaskKey,@YES,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         for (Class cls = object_getClass(task); DPSSubclass(cls,NSURLSessionTask.class); cls = class_getSuperclass(cls)) {
             unsigned count = 0;
             Method *methods = class_copyMethodList(cls,&count);
@@ -423,10 +450,11 @@ static void DPSPrepareTask(id task, BOOL denied) {
                 if ([gInstalled containsObject:key]) continue;
                 IMP original = method_getImplementation(method);
                 id replacement = ^(NSURLSessionTask *self) {
-                    BOOL clockEligible = ![self isKindOfClass:NSURLSessionUploadTask.class];
+                    BOOL clockEligible = ![self isKindOfClass:NSURLSessionUploadTask.class] &&
+                        [objc_getAssociatedObject(self,&gClockTaskKey) boolValue];
                     if ([objc_getAssociatedObject(self,&gPrivateTaskKey) boolValue] ||
-                        (!(clockEligible && DPSAllowedRequest(self.originalRequest)) && DPSDeniedURL(self.originalRequest.URL)) ||
-                        (!(clockEligible && DPSAllowedRequest(self.currentRequest)) && DPSDeniedURL(self.currentRequest.URL))) {
+                        (!(clockEligible || DPSAllowedRequest(self.originalRequest)) && DPSDeniedURL(self.originalRequest.URL)) ||
+                        (!(clockEligible || DPSAllowedRequest(self.currentRequest)) && DPSDeniedURL(self.currentRequest.URL))) {
                         DPSCount();
                         [self cancel];
                     }

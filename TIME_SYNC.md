@@ -65,6 +65,8 @@ LeanCloud 本身存在业务初始化/上报引用；上述结论不代表整个
 
 1. 在样本自身的 `WCTools +requestServerTime:com:` 入口观察完整地址，
    原样转交原始方法、参数与 completion；安装前校验 Objective-C 方法 ABI。
+   如果首次校时发生在观察器安装竞态窗口，已识别的样本 UUID 中，
+   WCTools/订单校时调用栈也可触发同样的严格请求检查，并给任务打一次性校时标记。
 2. 只登记 HTTP/HTTPS 的严格 `/wx/get_time` 地址；保留协议、主机和端口，
    拒绝 userinfo、query、fragment、大小写路径变体和编码路径变体。
 3. 请求必须命中已观察地址，且为无 body、无 body stream 的 GET。

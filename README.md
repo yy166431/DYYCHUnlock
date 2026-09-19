@@ -11,6 +11,12 @@
 校时需要连接原时间服务器，对方仍能看到连接/IP；此修复不能保证“作者完全不可见”。
 手机端功能、实际往返耗时与校时精度仍需实测。
 
+实机先确认安装的是本次 Hook（SHA-256
+`46b5454e0b0be7b03021a4e34756439deed15a332b0d0d91e7e1c2e3938b5af0`），
+主插件是同目录的 `libswiftMetal_private.dylib`，并冷启动应用。启动日志应出现
+`[DYYYPrivacy] installed: WCTools requestServerTime:com:`；没有这条日志说明注入器
+没有加载新 Hook，继续测试只会走旧版本行为。
+
 ## 构建
 
 Push 到 `main` 或手动运行 GitHub Actions 的 `build-dyychu`。
