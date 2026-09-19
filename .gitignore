@@ -3,3 +3,4 @@ tests/*.exe
 *.blackbox-analysis/
 /libDYYCHUnlock.dylib
 *.dSYM/
+/server-time-probe.log

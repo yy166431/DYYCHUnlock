@@ -17,6 +17,7 @@ jobs:
           /tmp/privacy-policy-test
           clang -std=gnu11 -fobjc-arc -fblocks -framework Foundation -Wno-deprecated-declarations tests/privacy_runtime_test.m -o /tmp/privacy-runtime-test
           /tmp/privacy-runtime-test
+          node --check diagnostics/server_time_probe.js
       - name: Build the fixed arm64 library
         run: |
           SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
@@ -38,3 +39,4 @@ jobs:
             README.md
             PRIVACY.md
             TIME_SYNC.md
+            diagnostics/

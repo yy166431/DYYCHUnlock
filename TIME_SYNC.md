@@ -71,6 +71,15 @@ serverSeconds - laterLocalNow + receiveLocalNow - requestStart
 将结果写入 `setL_s_time_interval:`。以上不能简化成标准的 RTT/2 校时算法。
 修复保留这段原始运算，不自行生成 timestamp，也不替换成本机时间。
 
+抢单时间的一个已确认消费者是 `sub_C417D8`：`0xc4181c` 读取 NSDate epoch，
+`0xc4184c` 获取 `l_s_time_interval`，`0xc41854` 相加，之后在 `0xc41878`
+读取 `targetSaleTime` 作比较。因此偏移保持 0 时会跟随本机时间；仅看到抢单
+时间随本机变化，不能区分配置缺失、请求失败、响应无效或偏移未被采用。
+测试时应先改系统时间再冷启动 App，以排除校时完成后再改钟使缓存偏移失效的情况。
+
+可用 `diagnostics/server_time_probe.js` 记录真实配置请求、WCTools 回调秒值与
+偏移 setter。探针会扰动耗时，只用来定位回退阶段，不验证毫秒精度。
+
 ## LeanCloud 时间接口的证据边界
 
 `+[LCApplication getServerDate:]` 位于 `0x11ce714`，其 SDK 实现确实会发起
